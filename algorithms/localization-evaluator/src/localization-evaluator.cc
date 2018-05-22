@@ -9,6 +9,7 @@ DEFINE_double(
     benchmark_position_error_threshold, 0.05,
     "Position error threshold in meters to count vertex "
     "as correctly localized.");
+DEFINE_uint64(eloc_restrict_num_query_vertices, 0, "");
 
 namespace localization_evaluator {
 
@@ -30,6 +31,8 @@ bool LocalizationEvaluator::evaluateSingleKeyframe(
       "LocalizationEvaluator -- matches");
   statistics::StatsCollector stats_collector_ransac_inliers(
       "LocalizationEvaluator -- RANSAC inliers");
+  statistics::StatsCollector stats_collector_ransac_inliers_wrong_loc(
+      "LocalizationEvaluator -- RANSAC inliers when wrong localization");
 
   CHECK(map_->hasVertex(query_vertex_id))
       << "Couldn't find map vertex with ID: " << query_vertex_id.hexString();
@@ -65,6 +68,9 @@ bool LocalizationEvaluator::evaluateSingleKeyframe(
     stats_collector_error_successes.AddSample(1.0);
     return true;
   } else {
+    if (*ransac_ok) {
+      stats_collector_ransac_inliers_wrong_loc.AddSample(*inliers_count);
+    }
     LOG(WARNING) << "\tCouldn't localize " << query_vertex_id;
     stats_collector_error_successes.AddSample(0.0);
     return false;
@@ -77,6 +83,8 @@ void LocalizationEvaluator::evaluateMission(
 
   pose_graph::VertexIdList vertices;
   map_->getAllVertexIdsInMission(mission_id, &vertices);
+  if (FLAGS_eloc_restrict_num_query_vertices)
+    vertices.resize(FLAGS_eloc_restrict_num_query_vertices);
 
   std::vector<char> is_correct;
   std::vector<char> ransac_ok;

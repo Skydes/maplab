@@ -60,9 +60,16 @@ void VILocalizationEvaluator::evaluateLocalizationPerformance(
 
   if (mission_statistics.num_vertices > 0u) {
     LOG(INFO) << "Recall: "
-              << (static_cast<float>(
-                      mission_statistics.successful_localizations) /
-                  mission_statistics.num_vertices);
+            << static_cast<double>(mission_statistics.successful_localizations) /
+                   mission_statistics.num_vertices
+            << " (" << mission_statistics.successful_localizations << "/"
+            << mission_statistics.num_vertices << ")";
+    LOG(INFO) << "Wrong localizations: "
+            << static_cast<double>(mission_statistics.bad_localization_p_G_I.size()) /
+                   mission_statistics.num_vertices
+            << " (" << mission_statistics.bad_localization_p_G_I.size() << "/"
+            << mission_statistics.num_vertices << ")";
+
   } else {
     LOG(WARNING) << "No vertices evaluated!";
   }

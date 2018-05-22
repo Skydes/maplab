@@ -251,6 +251,9 @@ bool LoopClosureHandler::handleLoopClosure(
   // Bail for cases where there is no hope to reach the min num inliers.
   int total_matches = structure_matches.size();
   if (total_matches < FLAGS_lc_min_inlier_count) {
+    statistics::StatsCollector stats(
+        "LC bailed because too few inliers - before check valid");
+    stats.IncrementOne();
     return false;
   }
 
