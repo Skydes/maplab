@@ -19,6 +19,8 @@
 #include <vi-map/unique-id.h>
 #include <vi-map/vi-map.h>
 
+#include <deep-relocalization/place-retrieval.h>
+
 #include "loop-closure-handler/loop-closure-constraint.h"
 #include "loop-closure-handler/loop-closure-handler.h"
 #include "loop-closure-handler/loop_detector_node.pb.h"
@@ -204,6 +206,21 @@ class LoopDetectorNode final
   // The filename of the serialization file.
   static const std::string serialization_filename_;
   const bool use_random_pnp_seed_;
+
+
+  bool lcWithPrior(
+      const loop_closure::ProjectedImagePtrList& query_projected_image_ptr_list,
+      const vi_map::VisualFrameIdentifierList& prior_frames_list,
+      vi_map::VIMap* map, pose::Transformation* T_G_I,
+      unsigned int* num_of_lc_matches,
+      vi_map::LoopClosureConstraint* inlier_constraint) const;
+
+  bool use_deep_retrieval_;
+  std::unique_ptr<PlaceRetrieval> deep_retrieval_;
+  typedef std::unordered_map<vi_map::VisualFrameIdentifier,
+                             std::shared_ptr<loop_closure::ProjectedImage>>
+      VisualFrameToProjectedImageMap;
+  VisualFrameToProjectedImageMap visual_frame_to_projected_image_map_;
 
   // A mapping from the merged landmark id (does not exist anymore) to the
   // landmark id it was merged into (and should exist).

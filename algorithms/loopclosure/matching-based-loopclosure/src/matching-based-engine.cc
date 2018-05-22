@@ -261,6 +261,7 @@ void MatchingBasedLoopDetector::Clear() {
   aslam::ScopedWriteLock lock(&read_write_mutex);
   database_.clear();
   descriptor_index_to_keypoint_id_.clear();
+  keyframe_id_to_num_descriptors_.clear();
   index_interface_->Clear();
   descriptor_index_ = 0;
 }

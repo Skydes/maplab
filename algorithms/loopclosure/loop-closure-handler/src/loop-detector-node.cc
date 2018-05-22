@@ -4,6 +4,7 @@
 #include <mutex>
 #include <sstream>  // NOLINT
 #include <string>
+#include <fstream>
 
 #include <Eigen/Geometry>
 #include <aslam/common/statistics/statistics.h>
@@ -25,6 +26,10 @@
 #include <matching-based-loopclosure/scoring.h>
 #include <vi-map/landmark-quality-metrics.h>
 
+#include <opencv2/opencv.hpp>
+#include <deep-relocalization/place-retrieval.h>
+#include <deep-relocalization/descriptor_index.pb.h>
+
 #include "loop-closure-handler/loop-closure-handler.h"
 #include "loop-closure-handler/visualization/loop-closure-visualizer.h"
 
@@ -34,14 +39,35 @@ DEFINE_bool(
     "loop-closure.");
 DEFINE_bool(lc_use_random_pnp_seed, true, "Use random seed for pnp RANSAC.");
 
+DEFINE_bool(lc_use_deep_retrieval, false, "");
+DEFINE_string(lc_deep_retrieval_model_path, "", "");
+DEFINE_string(lc_deep_retrieval_index_path, "", "");
+DEFINE_uint64(lc_deep_retrieval_num_nn, 20, "");
+DEFINE_double(lc_deep_retrieval_max_nn_distance, 2, "");
+
 namespace loop_detector_node {
 LoopDetectorNode::LoopDetectorNode()
-    : use_random_pnp_seed_(FLAGS_lc_use_random_pnp_seed) {
+    : use_random_pnp_seed_(FLAGS_lc_use_random_pnp_seed),
+      use_deep_retrieval_(FLAGS_lc_use_deep_retrieval) {
   matching_based_loopclosure::MatchingBasedEngineSettings
       matching_engine_settings;
   loop_detector_ =
       std::make_shared<matching_based_loopclosure::MatchingBasedLoopDetector>(
           matching_engine_settings);
+
+  if (use_deep_retrieval_) {
+    std::string retrieval_model_path = FLAGS_lc_deep_retrieval_model_path;
+    std::string retrieval_index_path = FLAGS_lc_deep_retrieval_index_path;
+    CHECK(!retrieval_model_path.empty());
+    CHECK(!retrieval_index_path.empty());
+
+    deep_retrieval_.reset(new PlaceRetrieval(retrieval_model_path));
+    deep_relocalization::proto::DescriptorIndex proto_retrieval_index;
+    std::fstream input(retrieval_index_path, std::ios::in | std::ios::binary);
+    CHECK(proto_retrieval_index.ParseFromIstream(&input));
+    //CHECK_EQ(model_name, proto_index.model_name());  // TODO: parse model name
+    deep_retrieval_->LoadIndex(proto_retrieval_index);
+  }
 }
 
 const std::string LoopDetectorNode::serialization_filename_ =
@@ -439,7 +465,12 @@ void LoopDetectorNode::addLandmarkSetToDatabase(
         vertex.getMissionId(), kSkipInvalidLandmarkIds,
         frameid_and_landmarks.second, projected_image.get());
 
-    loop_detector_->Insert(projected_image);
+    if (use_deep_retrieval_) {
+      visual_frame_to_projected_image_map_.emplace(
+          frame_identifier, projected_image);
+    } else {
+      loop_detector_->Insert(projected_image);
+    }
   }
 }
 
@@ -590,6 +621,192 @@ void LoopDetectorNode::findNearestNeighborMatchesForNFrame(
   *num_of_lc_matches = loop_closure::getNumberOfMatches(*frame_matches_list);
 }
 
+bool LoopDetectorNode::lcWithPrior(
+    const loop_closure::ProjectedImagePtrList& query_projected_image_ptr_list,
+    const vi_map::VisualFrameIdentifierList& prior_frames_list,
+    vi_map::VIMap* map, pose::Transformation* T_G_I,
+    unsigned int* num_of_lc_matches,
+    vi_map::LoopClosureConstraint* inlier_constraint) const {
+  CHECK_NOTNULL(map);
+  CHECK_NOTNULL(T_G_I);
+  CHECK_NOTNULL(num_of_lc_matches);
+  CHECK_NOTNULL(inlier_constraint);
+
+  statistics::StatsCollector connected_comp_stats(
+      "lcWithPrior -- Number of connected components");
+  statistics::StatsCollector max_inlier_ratio_ok_stats(
+      "lcWithPrior -- Max inlier ratio among components with RANSAC OK");
+  statistics::StatsCollector num_ransac_ok_higher_one_stats(
+      "lcWithPrior -- Num RANSAC OK higher than one");
+  statistics::StatsCollector num_frames_in_selected_component_stats(
+      "lcWithPrior -- Num frames in selected component");
+
+  // Build covisibility graph
+  typedef int ComponentId;
+  constexpr ComponentId kInvalidComponentId = -1;
+  typedef std::unordered_map<vi_map::VisualFrameIdentifier, ComponentId>
+      FramesToComponents;
+  typedef std::unordered_map<ComponentId,
+                             std::unordered_set<vi_map::VisualFrameIdentifier>>
+      Components;
+  typedef std::unordered_map<vi_map::LandmarkId,
+                             std::vector<vi_map::VisualFrameIdentifier>>
+      LandmarkFrames;
+
+  FramesToComponents frames_to_components;
+  LandmarkFrames landmark_frames;
+  for (const vi_map::VisualFrameIdentifier& frame_id : prior_frames_list) {
+    const VisualFrameToProjectedImageMap::const_iterator projected_image_it =
+        visual_frame_to_projected_image_map_.find(frame_id);
+    CHECK(projected_image_it != visual_frame_to_projected_image_map_.end());
+    for (const vi_map::LandmarkId& landmark_id :
+         projected_image_it->second->landmarks) {
+      landmark_frames[landmark_id].emplace_back(frame_id);
+    }
+    frames_to_components.emplace(frame_id, kInvalidComponentId);
+  }
+
+  ComponentId count_component_index = 0;
+  size_t max_component_size = 0u;
+  ComponentId max_component_id = kInvalidComponentId;
+  Components components;
+  for (const FramesToComponents::value_type& frame_to_component :
+       frames_to_components) {
+    if (frame_to_component.second != kInvalidComponentId)
+      continue;
+    ComponentId component_id = count_component_index++;
+
+    // Find the largest set of frames connected by landmark covisibility.
+    std::queue<vi_map::VisualFrameIdentifier> exploration_queue;
+    exploration_queue.push(frame_to_component.first);
+    while (!exploration_queue.empty()) {
+      const vi_map::VisualFrameIdentifier& exploration_frame =
+          exploration_queue.front();
+
+      const FramesToComponents::iterator exploration_frame_and_component =
+          frames_to_components.find(exploration_frame);
+      CHECK(exploration_frame_and_component != frames_to_components.end());
+
+      if (exploration_frame_and_component->second == kInvalidComponentId) {
+        // Not part of a connected component.
+        exploration_frame_and_component->second = component_id;
+        components[component_id].insert(exploration_frame);
+
+        // Find other prior frames connected through the landmarks
+        const loop_closure::ProjectedImage& projected_image =
+            *visual_frame_to_projected_image_map_.at(exploration_frame);
+        for (const vi_map::LandmarkId& landmark_id :
+             projected_image.landmarks) {
+          for (const vi_map::VisualFrameIdentifier& connected_frame :
+               landmark_frames[landmark_id]) {
+            if (frames_to_components[connected_frame] == kInvalidComponentId) {
+              exploration_queue.push(connected_frame);
+            }
+          }
+        }
+
+        if (components[component_id].size() > max_component_size) {
+          max_component_size = components[component_id].size();
+          max_component_id = component_id;
+        }
+      }
+      exploration_queue.pop();
+    }
+  }
+  connected_comp_stats.AddSample(components.size());
+
+  // Do PnP+RANSAC for every component
+  double max_inlier_ratio = 0.0;
+  size_t num_ransac_ok = 0u;
+  size_t selected_inlier_count = 0u;
+  ComponentId selected_component_id = kInvalidComponentId;
+  pose::Transformation& selected_T_G_I = *T_G_I;
+  unsigned int& selected_num_of_lc_matches = *num_of_lc_matches;
+  vi_map::LoopClosureConstraint& selected_inlier_constraint =
+      *inlier_constraint;
+  timing::Timer timer_pnp_all_components(
+      "lcWithPrior -- Compute Pnp+RANSAC for all components");
+  for (const Components::value_type& component_to_frames : components) {
+    // Rebuild the index with the component frames
+    loop_detector_->Clear();
+    for (const vi_map::VisualFrameIdentifier& frame_id :
+         component_to_frames.second) {
+      loop_detector_->Insert(visual_frame_to_projected_image_map_.at(frame_id));
+    }
+
+    // Find descriptor matches
+    loop_closure::FrameToMatches frame_to_matches;
+    constexpr bool kParallelFindIfPossible = true;
+    loop_detector_->Find(
+        query_projected_image_ptr_list, kParallelFindIfPossible,
+        &frame_to_matches);
+    const size_t num_matches = loop_closure::getNumberOfMatches(
+        frame_to_matches);
+    if (num_matches == 0u) {
+      continue;
+    }
+
+    // Create constraint for PnP
+    vi_map::LoopClosureConstraint constraint;
+    for (const loop_closure::FrameIdMatchesPair& frame_matches_pair :
+         frame_to_matches) {
+      vi_map::LoopClosureConstraint tmp_constraint;
+      const bool conversion_success =
+          convertFrameMatchesToConstraint(frame_matches_pair, &tmp_constraint);
+      if (!conversion_success) {
+        continue;
+      }
+      constraint.query_vertex_id = tmp_constraint.query_vertex_id;
+      constraint.structure_matches.insert(
+          constraint.structure_matches.end(),
+          tmp_constraint.structure_matches.begin(),
+          tmp_constraint.structure_matches.end());
+    }
+
+    // Perform PnP+RANSAC
+    int inlier_count = 0;
+    double inlier_ratio = 0.0;
+    constexpr bool kMergeLandmarks = false;
+    constexpr bool kAddLcEdges = false;
+    pose::Transformation component_T_G_I;
+    vi_map::LoopClosureConstraint component_inlier_constraint;
+    pose_graph::VertexId vertex_id_closest_to_structure_matches;
+    loop_closure_handler::LoopClosureHandler::MergedLandmark3dPositionVector
+        landmark_pairs_merged;
+    std::mutex map_mutex;
+    bool ransac_ok = handleLoopClosures(
+        constraint, kMergeLandmarks, kAddLcEdges, &inlier_count, &inlier_ratio,
+        map, &component_T_G_I, &component_inlier_constraint,
+        &landmark_pairs_merged, &vertex_id_closest_to_structure_matches,
+        &map_mutex);
+
+    if (ransac_ok) {
+      ++num_ransac_ok;
+      if (inlier_ratio > max_inlier_ratio) {
+        max_inlier_ratio = inlier_ratio;
+        selected_inlier_count = inlier_count;
+        selected_component_id = component_to_frames.first;
+        selected_T_G_I = component_T_G_I;
+        selected_num_of_lc_matches = num_matches;
+        selected_inlier_constraint = component_inlier_constraint;
+      }
+    }
+  }
+  timer_pnp_all_components.Stop();
+
+  if (num_ransac_ok == 0u) {
+    return false;
+  }
+
+  max_inlier_ratio_ok_stats.AddSample(max_inlier_ratio);
+  num_frames_in_selected_component_stats.AddSample(
+      components[selected_component_id].size());
+  if (num_ransac_ok > 1) {
+    num_ransac_ok_higher_one_stats.AddSample(num_ransac_ok);
+  }
+  return true;
+}
+
 bool LoopDetectorNode::findVertexInDatabase(
     const vi_map::Vertex& query_vertex, const bool merge_landmarks,
     const bool add_lc_edges, vi_map::VIMap* map, pose::Transformation* T_G_I,
@@ -600,13 +817,15 @@ bool LoopDetectorNode::findVertexInDatabase(
   CHECK_NOTNULL(num_of_lc_matches);
   CHECK_NOTNULL(inlier_constraint);
 
-  if (loop_detector_->NumEntries() == 0u) {
+  if (!use_deep_retrieval_ && loop_detector_->NumEntries() == 0u) {
     return false;
   }
 
   const size_t num_frames = query_vertex.numFrames();
   loop_closure::ProjectedImagePtrList projected_image_ptr_list;
   projected_image_ptr_list.reserve(num_frames);
+
+  vi_map::VisualFrameIdentifierList all_retrieved_frames_list;
 
   for (size_t frame_idx = 0u; frame_idx < num_frames; ++frame_idx) {
     if (query_vertex.isVisualFrameSet(frame_idx) &&
@@ -624,7 +843,41 @@ bool LoopDetectorNode::findVertexInDatabase(
           *map, query_frame_id, query_vertex.getVisualFrame(frame_idx),
           observed_landmark_ids, query_vertex.getMissionId(),
           kSkipInvalidLandmarkIds, projected_image_ptr_list.back().get());
+
+      if (use_deep_retrieval_) {
+        // Check that the resource is available
+        backend::ResourceIdSet resource_ids;
+        query_vertex.getFrameResourceIdsOfType(
+            frame_idx, backend::ResourceType::kRawImage, &resource_ids);
+        if(!resource_ids.size()) {
+          continue;
+        }
+
+        // Retrieve NN
+        cv::Mat image;
+        CHECK(map->getRawImage(query_vertex, frame_idx, &image));
+        vi_map::VisualFrameIdentifierList retrieved_frames;
+        deep_retrieval_->RetrieveNearestNeighbors(
+            image, FLAGS_lc_deep_retrieval_num_nn,
+            FLAGS_lc_deep_retrieval_max_nn_distance, &retrieved_frames);
+        all_retrieved_frames_list.insert(
+            all_retrieved_frames_list.end(),
+            retrieved_frames.begin(), retrieved_frames.end());
+      }
     }
+  }
+
+  if (use_deep_retrieval_ && !all_retrieved_frames_list.size()) {
+    statistics::StatsCollector noresource_counter("No resource for retrieval");
+    noresource_counter.IncrementOne();
+    LOG(WARNING) << "Vertex " << query_vertex.id() << " has no resource, skip";
+    return false;
+  }
+
+  if (use_deep_retrieval_) {
+    return lcWithPrior(
+        projected_image_ptr_list, all_retrieved_frames_list, map, T_G_I,
+        num_of_lc_matches, inlier_constraint);
   }
 
   loop_closure::FrameToMatches frame_matches_list;

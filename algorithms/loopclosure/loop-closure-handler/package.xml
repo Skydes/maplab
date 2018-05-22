@@ -33,4 +33,5 @@
   <depend>vio_common</depend>
   <depend>visualization</depend>
   <depend>vocabulary_tree</depend>
+  <depend>deep_relocalization</depend>
 </package>
