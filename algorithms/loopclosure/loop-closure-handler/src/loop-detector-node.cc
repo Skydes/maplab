@@ -44,6 +44,7 @@ DEFINE_string(lc_deep_retrieval_model_path, "", "");
 DEFINE_string(lc_deep_retrieval_index_path, "", "");
 DEFINE_uint64(lc_deep_retrieval_num_nn, 20, "");
 DEFINE_double(lc_deep_retrieval_max_nn_distance, 2, "");
+DEFINE_uint64(lc_deep_retrieval_expand_components, 0, "");
 
 namespace loop_detector_node {
 LoopDetectorNode::LoopDetectorNode()
@@ -641,7 +642,6 @@ bool LoopDetectorNode::lcWithPrior(
   statistics::StatsCollector num_frames_in_selected_component_stats(
       "lcWithPrior -- Num frames in selected component");
 
-  // Build covisibility graph
   typedef int ComponentId;
   constexpr ComponentId kInvalidComponentId = -1;
   typedef std::unordered_map<vi_map::VisualFrameIdentifier, ComponentId>
@@ -653,6 +653,7 @@ bool LoopDetectorNode::lcWithPrior(
                              std::vector<vi_map::VisualFrameIdentifier>>
       LandmarkFrames;
 
+  // Build the covisibility graph
   FramesToComponents frames_to_components;
   LandmarkFrames landmark_frames;
   for (const vi_map::VisualFrameIdentifier& frame_id : prior_frames_list) {
@@ -666,6 +667,44 @@ bool LoopDetectorNode::lcWithPrior(
     frames_to_components.emplace(frame_id, kInvalidComponentId);
   }
 
+  // Expand the set of prior frames to neighboring frames in the graph
+  for (size_t i = 0; i < FLAGS_lc_deep_retrieval_expand_components; i++) {
+    std::unordered_set<vi_map::VisualFrameIdentifier> new_frames;
+    for (const LandmarkFrames::value_type& lm_frames : landmark_frames) {
+      const vi_map::LandmarkId& landmark_id = lm_frames.first;
+      const vi_map::Landmark& landmark = map->getLandmark(landmark_id);
+      for (const vi_map::KeypointIdentifier& kp_id :
+           landmark.getObservations()) {
+        const vi_map::VisualFrameIdentifier& obs_frame_id = kp_id.frame_id;
+        if (frames_to_components.find(obs_frame_id)
+            == frames_to_components.end()) {
+          new_frames.emplace(obs_frame_id);
+        }
+      }
+    }
+    statistics::StatsCollector num_new_frames_expansion_stats(
+        "lcWithPrior -- Number of frames added when expanding");
+    num_new_frames_expansion_stats.AddSample(new_frames.size());
+
+    for (const vi_map::VisualFrameIdentifier& frame_id : new_frames) {
+      CHECK(frames_to_components.find(frame_id) == frames_to_components.end());
+      const VisualFrameToProjectedImageMap::const_iterator projected_image_it =
+          visual_frame_to_projected_image_map_.find(frame_id);
+      CHECK(projected_image_it != visual_frame_to_projected_image_map_.end());
+      for (const vi_map::LandmarkId& landmark_id :
+           projected_image_it->second->landmarks) {
+        if (landmark_frames.find(landmark_id) == landmark_frames.end()) {
+          continue;
+        }
+        const vi_map::VisualFrameIdentifierList& frames =
+            landmark_frames[landmark_id];
+        landmark_frames[landmark_id].emplace_back(frame_id);
+      }
+      CHECK(frames_to_components.emplace(frame_id, kInvalidComponentId).second);
+    }
+  }
+
+  // Label the connected components
   ComponentId count_component_index = 0;
   size_t max_component_size = 0u;
   ComponentId max_component_id = kInvalidComponentId;
@@ -697,6 +736,9 @@ bool LoopDetectorNode::lcWithPrior(
             *visual_frame_to_projected_image_map_.at(exploration_frame);
         for (const vi_map::LandmarkId& landmark_id :
              projected_image.landmarks) {
+          if (landmark_frames.find(landmark_id) == landmark_frames.end()) {
+            continue;
+          }
           for (const vi_map::VisualFrameIdentifier& connected_frame :
                landmark_frames[landmark_id]) {
             if (frames_to_components[connected_frame] == kInvalidComponentId) {
