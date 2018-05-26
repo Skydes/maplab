@@ -120,10 +120,16 @@ void LocalizationEvaluator::evaluateMission(
         }
       };
 
-  constexpr bool kAlwaysParallelize = true;
-  const size_t num_threads = common::getNumHardwareThreads();
-  common::ParallelProcess(
-      is_correct.size(), pose_query, kAlwaysParallelize, num_threads);
+  //constexpr bool kAlwaysParallelize = true;
+  //const size_t num_threads = common::getNumHardwareThreads();
+  //common::ParallelProcess(
+      //is_correct.size(), pose_query, kAlwaysParallelize, num_threads);
+
+  std::vector<size_t> query_indices(is_correct.size());
+  // Fill in indices: {0, 1, 2, ...}.
+  std::iota(query_indices.begin(), query_indices.end(), 0u);
+  // Avoid spawning a thread by directly calling the function.
+  pose_query(query_indices);
 
   // Copy back all valid results.
   statistics->num_vertices = 0u;
