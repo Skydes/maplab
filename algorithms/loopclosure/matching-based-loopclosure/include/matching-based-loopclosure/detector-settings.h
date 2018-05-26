@@ -47,6 +47,7 @@ struct MatchingBasedEngineSettings {
   std::string projected_quantizer_filename;
   int num_closest_words_for_nn_search;
   double min_image_time_seconds;
+  bool do_covisibility_filtering;
   size_t min_verify_matches_num;
   float fraction_best_scores;
   int num_nearest_neighbors;

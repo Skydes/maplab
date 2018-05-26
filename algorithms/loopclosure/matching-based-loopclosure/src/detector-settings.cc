@@ -15,6 +15,8 @@ DEFINE_string(
 DEFINE_double(
     lc_min_image_time_seconds, 10.0,
     "Minimum time between matching images to allow a loop closure.");
+DEFINE_bool(
+    lc_do_covisibility_filtering, true, "");
 DEFINE_uint64(
     lc_min_verify_matches_num, 10u,
     "The minimum number of matches needed to verify geometry.");
@@ -36,6 +38,7 @@ MatchingBasedEngineSettings::MatchingBasedEngineSettings()
       projected_quantizer_filename(FLAGS_lc_projected_quantizer_filename),
       num_closest_words_for_nn_search(FLAGS_lc_num_words_for_nn_search),
       min_image_time_seconds(FLAGS_lc_min_image_time_seconds),
+      do_covisibility_filtering(FLAGS_lc_do_covisibility_filtering),
       min_verify_matches_num(FLAGS_lc_min_verify_matches_num),
       fraction_best_scores(FLAGS_lc_fraction_best_scores),
       num_nearest_neighbors(FLAGS_lc_num_neighbors) {

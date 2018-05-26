@@ -124,12 +124,24 @@ void MatchingBasedLoopDetector::Find(
               structure_match);
         }
       }
-      // We don't want to enforce unique matches yet in case of additional
-      // vertex-landmark covisibility filtering. The reason for this is that
-      // removing non-unique matches can split covisibility clusters.
-      doCovisibilityFiltering(
-          keyframe_to_matches_map, !use_vertex_covis_filter,
-          &temporary_frame_matches, covis_frame_matches_mutex_ptr);
+
+      if (settings_.do_covisibility_filtering) {
+        // We don't want to enforce unique matches yet in case of additional
+        // vertex-landmark covisibility filtering. The reason for this is that
+        // removing non-unique matches can split covisibility clusters.
+        doCovisibilityFiltering(
+            keyframe_to_matches_map, !use_vertex_covis_filter,
+            &temporary_frame_matches, covis_frame_matches_mutex_ptr);
+      } else {
+        for (const KeyframeToMatchesMap::value_type& keyframe_matches_pair :
+             keyframe_to_matches_map) {
+          auto& matches_list = temporary_frame_matches[
+              projected_image_query.keyframe_id];
+          matches_list.insert(
+              matches_list.begin(), keyframe_matches_pair.second.begin(),
+              keyframe_matches_pair.second.end());
+        }
+      }
     }
   };
   if (parallelize) {
@@ -147,7 +159,7 @@ void MatchingBasedLoopDetector::Find(
     query_helper(proj_img_indices);
   }
 
-  if (use_vertex_covis_filter) {
+  if (settings_.do_covisibility_filtering && use_vertex_covis_filter) {
     // Convert keyframe matches to vertex matches.
     const size_t num_frame_matches =
         loop_closure::getNumberOfMatches(temporary_frame_matches);
