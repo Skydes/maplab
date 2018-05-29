@@ -27,6 +27,7 @@
 #include <vi-map/landmark-quality-metrics.h>
 
 #include <opencv2/opencv.hpp>
+#include <opencv2/core/eigen.hpp>
 #include <deep-relocalization/place-retrieval.h>
 #include <deep-relocalization/descriptor_index.pb.h>
 
@@ -45,6 +46,7 @@ DEFINE_string(lc_deep_retrieval_index_path, "", "");
 DEFINE_uint64(lc_deep_retrieval_num_nn, 20, "");
 DEFINE_double(lc_deep_retrieval_max_nn_distance, 2, "");
 DEFINE_uint64(lc_deep_retrieval_expand_components, 0, "");
+DEFINE_bool(lc_use_better_descriptors, false, "");
 
 namespace loop_detector_node {
 LoopDetectorNode::LoopDetectorNode()
@@ -55,6 +57,10 @@ LoopDetectorNode::LoopDetectorNode()
   loop_detector_ =
       std::make_shared<matching_based_loopclosure::MatchingBasedLoopDetector>(
           matching_engine_settings);
+
+  if (FLAGS_lc_use_better_descriptors) {
+    better_descriptor_extractor_ = cv::xfeatures2d::SIFT::create();
+  }
 
   if (use_deep_retrieval_) {
     std::string retrieval_model_path = FLAGS_lc_deep_retrieval_model_path;
@@ -119,7 +125,7 @@ bool LoopDetectorNode::convertFrameMatchesToConstraint(
   return true;
 }
 
-void LoopDetectorNode::convertFrameToProjectedImage(
+bool LoopDetectorNode::convertFrameToProjectedImage(
     const vi_map::VIMap& map, const vi_map::VisualFrameIdentifier& frame_id,
     const aslam::VisualFrame& frame,
     const vi_map::LandmarkIdList& observed_landmark_ids,
@@ -129,12 +135,12 @@ void LoopDetectorNode::convertFrameToProjectedImage(
   // We want to add all landmarks.
   vi_map::LandmarkIdSet landmarks_to_add(
       observed_landmark_ids.begin(), observed_landmark_ids.end());
-  convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
+  return convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
       map, frame_id, frame, observed_landmark_ids, mission_id,
       skip_invalid_landmark_ids, landmarks_to_add, projected_image);
 }
 
-void LoopDetectorNode::convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
+bool LoopDetectorNode::convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
     const vi_map::VIMap& map, const vi_map::VisualFrameIdentifier& frame_id,
     const aslam::VisualFrame& frame,
     const vi_map::LandmarkIdList& observed_landmark_ids,
@@ -162,6 +168,49 @@ void LoopDetectorNode::convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
       original_descriptors.rows(), original_descriptors.cols());
   Eigen::Matrix2Xd valid_measurements(2, original_measurements.cols());
   vi_map::LandmarkIdList valid_landmark_ids(original_measurements.cols());
+
+  Eigen::MatrixXf better_descriptors;
+  Eigen::MatrixXf valid_better_descriptors(
+      original_descriptors.rows(), original_descriptors.cols());
+
+  if (FLAGS_lc_use_better_descriptors) {
+    cv::Mat image;
+    vi_map::Vertex vertex = map.getVertex(frame_id.vertex_id);
+    if (!map.hasRawImage(vertex, frame_id.frame_index)) {
+      return false;
+    }
+    CHECK(map.getRawImage(vertex, frame_id.frame_index, &image));
+    CHECK_NOTNULL(image.data);
+
+    size_t num_detections = original_measurements.cols();
+    CHECK(frame.hasKeypointScales());
+    Eigen::VectorXd scales = frame.getKeypointScales();
+    CHECK_EQ(scales.size(), num_detections);
+    std::vector<cv::KeyPoint> keypoints;
+    for (size_t i = 0; i < num_detections; i++) {
+      keypoints.emplace_back(
+          original_measurements(0, i),
+          original_measurements(1, i),
+          5.6);
+          //scales(i));
+    }
+    std::vector<cv::KeyPoint> original_keypoints(keypoints);
+
+    // OpenCV doc mentions that SIFT can discard some keypoints or compute
+    // duplicated descriptors. For now we simply check that it's not the case.
+    // TODO: mark the landmarks associated with rejected keypoints as invalid
+    // TODO: remove duplicates
+    cv::Mat cv_descriptors;
+    better_descriptor_extractor_->compute(image, keypoints, cv_descriptors);
+    CHECK_EQ(keypoints.size(), num_detections);
+    for (size_t i = 0; i < original_keypoints.size(); i++) {
+      CHECK_EQ(original_keypoints[i].pt, keypoints[i].pt);
+    }
+    cv::cv2eigen(cv_descriptors, better_descriptors);
+    better_descriptors.transposeInPlace();
+    better_descriptors /= 512.f;  // scale back to [0, 1]
+    CHECK_EQ(better_descriptors.cols(), original_descriptors.cols());
+  }
 
   int num_valid_landmarks = 0;
   for (int i = 0; i < original_measurements.cols(); ++i) {
@@ -192,14 +241,24 @@ void LoopDetectorNode::convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
         is_landmark_valid) {
       valid_measurements.col(num_valid_landmarks) =
           original_measurements.col(i);
-      valid_descriptors.col(num_valid_landmarks) = original_descriptors.col(i);
+      if (FLAGS_lc_use_better_descriptors) {
+        valid_better_descriptors.col(num_valid_landmarks) =
+            better_descriptors.col(i);
+      } else {
+        valid_descriptors.col(num_valid_landmarks) = original_descriptors.col(i);
+      }
       valid_landmark_ids[num_valid_landmarks] = observed_landmark_ids[i];
       ++num_valid_landmarks;
     }
   }
 
   valid_measurements.conservativeResize(Eigen::NoChange, num_valid_landmarks);
-  valid_descriptors.conservativeResize(Eigen::NoChange, num_valid_landmarks);
+  if (FLAGS_lc_use_better_descriptors) {
+    valid_better_descriptors.conservativeResize(
+        Eigen::NoChange, num_valid_landmarks);
+  } else {
+    valid_descriptors.conservativeResize(Eigen::NoChange, num_valid_landmarks);
+  }
   valid_landmark_ids.resize(num_valid_landmarks);
 
   if (skip_invalid_landmark_ids) {
@@ -212,8 +271,13 @@ void LoopDetectorNode::convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
 
   projected_image->landmarks.swap(valid_landmark_ids);
   projected_image->measurements.swap(valid_measurements);
-  loop_detector_->ProjectDescriptors(
-      valid_descriptors, &projected_image->projected_descriptors);
+  if (FLAGS_lc_use_better_descriptors) {
+    projected_image->projected_descriptors = valid_better_descriptors;
+  } else {
+    loop_detector_->ProjectDescriptors(
+        valid_descriptors, &projected_image->projected_descriptors);
+  }
+  return true;
 }
 
 void LoopDetectorNode::convertLocalizationFrameToProjectedImage(
@@ -460,11 +524,18 @@ void LoopDetectorNode::addLandmarkSetToDatabase(
     std::shared_ptr<loop_closure::ProjectedImage> projected_image =
         std::make_shared<loop_closure::ProjectedImage>();
     constexpr bool kSkipInvalidLandmarkIds = true;
-    convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
+    bool success = convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
         map, frame_identifier,
         vertex.getVisualFrame(frame_identifier.frame_index), landmark_ids,
         vertex.getMissionId(), kSkipInvalidLandmarkIds,
         frameid_and_landmarks.second, projected_image.get());
+    if (!success) {
+      statistics::StatsCollector noresource_counter("No resource for indexing");
+      noresource_counter.IncrementOne();
+      LOG(WARNING) << "Vertex " << vertex.id()
+        << " has no resource, can't index, skip";
+      continue;
+    }
 
     if (use_deep_retrieval_) {
       visual_frame_to_projected_image_map_.emplace(
@@ -881,23 +952,21 @@ bool LoopDetectorNode::findVertexInDatabase(
       projected_image_ptr_list.push_back(
           std::make_shared<loop_closure::ProjectedImage>());
       constexpr bool kSkipInvalidLandmarkIds = false;
-      convertFrameToProjectedImage(
+      bool success = convertFrameToProjectedImage(
           *map, query_frame_id, query_vertex.getVisualFrame(frame_idx),
           observed_landmark_ids, query_vertex.getMissionId(),
           kSkipInvalidLandmarkIds, projected_image_ptr_list.back().get());
+      if (!success) {
+        continue;
+      }
 
       if (use_deep_retrieval_) {
-        // Check that the resource is available
-        backend::ResourceIdSet resource_ids;
-        query_vertex.getFrameResourceIdsOfType(
-            frame_idx, backend::ResourceType::kRawImage, &resource_ids);
-        if(!resource_ids.size()) {
+        if (!map->hasRawImage(query_vertex, frame_idx)) {
           continue;
         }
-
-        // Retrieve NN
         cv::Mat image;
         CHECK(map->getRawImage(query_vertex, frame_idx, &image));
+
         vi_map::VisualFrameIdentifierList retrieved_frames;
         deep_retrieval_->RetrieveNearestNeighbors(
             image, FLAGS_lc_deep_retrieval_num_nn,

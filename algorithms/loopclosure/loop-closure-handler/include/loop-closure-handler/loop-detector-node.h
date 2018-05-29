@@ -10,6 +10,7 @@
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
+#include <opencv2/xfeatures2d.hpp>
 #include <aslam/common/memory.h>
 #include <descriptor-projection/descriptor-projection.h>
 #include <localization-summary-map/unique-id.h>
@@ -131,14 +132,14 @@ class LoopDetectorNode final
   // The parameter skip_invalid_landmark_ids should be set to true when
   // creating an entry for insertion, or false when creating an entry
   // for query.
-  void convertFrameToProjectedImage(
+  bool convertFrameToProjectedImage(
       const vi_map::VIMap& map, const vi_map::VisualFrameIdentifier& frame_id,
       const aslam::VisualFrame& frame,
       const vi_map::LandmarkIdList& observed_landmark_ids,
       const vi_map::MissionId& mission_id, const bool skip_invalid_landmark_ids,
       loop_closure::ProjectedImage* projected_image) const;
 
-  void convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
+  bool convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
       const vi_map::VIMap& map, const vi_map::VisualFrameIdentifier& frame_id,
       const aslam::VisualFrame& frame,
       const vi_map::LandmarkIdList& observed_landmark_ids,
@@ -221,6 +222,7 @@ class LoopDetectorNode final
                              std::shared_ptr<loop_closure::ProjectedImage>>
       VisualFrameToProjectedImageMap;
   VisualFrameToProjectedImageMap visual_frame_to_projected_image_map_;
+  cv::Ptr<cv::xfeatures2d::SIFT> better_descriptor_extractor_;
 
   // A mapping from the merged landmark id (does not exist anymore) to the
   // landmark id it was merged into (and should exist).

@@ -23,6 +23,9 @@
 #include "matching-based-loopclosure/matching-based-engine.h"
 #include "matching-based-loopclosure/scoring.h"
 
+#include <gflags/gflags.h>
+DEFINE_bool(use_lowe_ratio_test, false, "");
+
 namespace matching_based_loopclosure {
 
 MatchingBasedLoopDetector::MatchingBasedLoopDetector(
@@ -103,25 +106,56 @@ void MatchingBasedLoopDetector::Find(
       KeyframeToMatchesMap keyframe_to_matches_map;
       for (int keypoint_idx = 0; keypoint_idx < indices.cols();
            ++keypoint_idx) {
-        for (int nn_search_idx = 0; nn_search_idx < indices.rows();
-             ++nn_search_idx) {
-          const int nn_match_descriptor_idx =
-              indices(nn_search_idx, keypoint_idx);
-          const float nn_match_distance =
-              distances(nn_search_idx, keypoint_idx);
-          if (nn_match_descriptor_idx == -1 ||
-              nn_match_distance == std::numeric_limits<float>::infinity()) {
-            break;  // No more results for this feature.
+        if (FLAGS_use_lowe_ratio_test) {
+          CHECK(indices.rows() >= 2);
+          const int first_nn_match_descriptor_idx =
+            indices(0, keypoint_idx);
+          const float first_nn_match_distance =
+            distances(0, keypoint_idx);
+          const int second_nn_match_descriptor_idx =
+            indices(1, keypoint_idx);
+          const float second_nn_match_distance =
+            distances(1, keypoint_idx);
+          if (first_nn_match_descriptor_idx == -1 ||
+              second_nn_match_descriptor_idx == -1 ||
+              first_nn_match_distance == std::numeric_limits<float>::infinity() ||
+              second_nn_match_distance == std::numeric_limits<float>::infinity()) {
+            continue;
+          }
+          statistics::StatsCollector lowe_ratio_stats("Lowe ratio");
+          lowe_ratio_stats.AddSample(first_nn_match_distance/second_nn_match_distance);
+          if (first_nn_match_distance >= 0.75*second_nn_match_distance) {
+              continue;
           }
           loop_closure::Match structure_match;
           if (!getMatchForDescriptorIndex(
-                  nn_match_descriptor_idx, projected_image_query, keypoint_idx,
-                  &structure_match)) {
+                  first_nn_match_descriptor_idx, projected_image_query,
+                  keypoint_idx, &structure_match)) {
             continue;
           }
-
           keyframe_to_matches_map[structure_match.keyframe_id_result].push_back(
               structure_match);
+        } else {
+          for (int nn_search_idx = 0; nn_search_idx < indices.rows();
+               ++nn_search_idx) {
+            const int nn_match_descriptor_idx =
+                indices(nn_search_idx, keypoint_idx);
+            const float nn_match_distance =
+                distances(nn_search_idx, keypoint_idx);
+            if (nn_match_descriptor_idx == -1 ||
+                nn_match_distance == std::numeric_limits<float>::infinity()) {
+              break;  // No more results for this feature.
+            }
+            loop_closure::Match structure_match;
+            if (!getMatchForDescriptorIndex(
+                    nn_match_descriptor_idx, projected_image_query, keypoint_idx,
+                    &structure_match)) {
+              continue;
+            }
+
+            keyframe_to_matches_map[structure_match.keyframe_id_result].push_back(
+                structure_match);
+          }
         }
       }
 

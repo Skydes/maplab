@@ -19,7 +19,7 @@ namespace loop_closure {
 using kd_tree_index::KDTreeIndex;
 class KDTreeIndexInterface : public IndexInterface {
  public:
-  enum { kTargetDimensionality = 10 };
+  enum { kTargetDimensionality = 64 };
   typedef KDTreeIndex<kTargetDimensionality> Index;
 
   explicit KDTreeIndexInterface(const std::string& projection_matrix_filepath) {
