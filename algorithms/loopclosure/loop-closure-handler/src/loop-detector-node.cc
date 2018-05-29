@@ -60,6 +60,10 @@ LoopDetectorNode::LoopDetectorNode()
 
   if (FLAGS_lc_use_better_descriptors) {
     better_descriptor_extractor_ = cv::xfeatures2d::SIFT::create();
+    CHECK_EQ(
+        static_cast<int>(matching_engine_settings.detector_engine_type),
+        static_cast<int>(matching_based_loopclosure::MatchingBasedEngineSettings
+          ::DetectorEngineType::kMatchingLDKdTree));
   }
 
   if (use_deep_retrieval_) {
@@ -169,9 +173,11 @@ bool LoopDetectorNode::convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
   Eigen::Matrix2Xd valid_measurements(2, original_measurements.cols());
   vi_map::LandmarkIdList valid_landmark_ids(original_measurements.cols());
 
+  const size_t better_descriptor_size =
+      better_descriptor_extractor_->descriptorSize();
   Eigen::MatrixXf better_descriptors;
   Eigen::MatrixXf valid_better_descriptors(
-      original_descriptors.rows(), original_descriptors.cols());
+      better_descriptor_size, original_descriptors.cols());
 
   if (FLAGS_lc_use_better_descriptors) {
     cv::Mat image;
@@ -210,6 +216,7 @@ bool LoopDetectorNode::convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
     better_descriptors.transposeInPlace();
     better_descriptors /= 512.f;  // scale back to [0, 1]
     CHECK_EQ(better_descriptors.cols(), original_descriptors.cols());
+    CHECK_EQ(better_descriptors.rows(), better_descriptor_size);
   }
 
   int num_valid_landmarks = 0;
