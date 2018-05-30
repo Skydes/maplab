@@ -32,7 +32,6 @@ class KDTreeIndex {
   static constexpr unsigned kSearchOptionsDefault =
       NNSearch::ALLOW_SELF_MATCH | NNSearch::SORT_RESULTS;
   // Epsilon approximation factor for kd-tree backtracking.
-  static constexpr float kSearchNNEpsilon = 0.0;
 
   KDTreeIndex() {}
 
@@ -118,8 +117,8 @@ class KDTreeIndex {
     }
     const NNSearch& index_ref = *index_;
     index_ref.knn(
-        query_features, *indices, *distances, num_neighbors, kSearchNNEpsilon,
-        kSearchOptionsDefault, FLAGS_lc_knn_max_radius);
+        query_features, *indices, *distances, num_neighbors,
+        FLAGS_lc_knn_epsilon, kSearchOptionsDefault, FLAGS_lc_knn_max_radius);
   }
 
  protected:

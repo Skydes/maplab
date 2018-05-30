@@ -76,7 +76,6 @@ LoopDetectorNode::LoopDetectorNode()
     deep_relocalization::proto::DescriptorIndex proto_retrieval_index;
     std::fstream input(retrieval_index_path, std::ios::in | std::ios::binary);
     CHECK(proto_retrieval_index.ParseFromIstream(&input));
-    //CHECK_EQ(model_name, proto_index.model_name());  // TODO: parse model name
     deep_retrieval_->LoadIndex(proto_retrieval_index);
   }
 }
@@ -188,6 +187,7 @@ bool LoopDetectorNode::convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
     CHECK(map.getRawImage(vertex, frame_id.frame_index, &image));
     CHECK_NOTNULL(image.data);
 
+    timing::Timer timer_compute_sift("lc -- Compute SIFT");
     size_t num_detections = original_measurements.cols();
     CHECK(frame.hasKeypointScales());
     Eigen::VectorXd scales = frame.getKeypointScales();
@@ -217,6 +217,7 @@ bool LoopDetectorNode::convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
     better_descriptors /= 512.f;  // scale back to [0, 1]
     CHECK_EQ(better_descriptors.cols(), original_descriptors.cols());
     CHECK_EQ(better_descriptors.rows(), better_descriptor_size);
+    timer_compute_sift.Stop();
   }
 
   int num_valid_landmarks = 0;
@@ -711,15 +712,6 @@ bool LoopDetectorNode::lcWithPrior(
   CHECK_NOTNULL(num_of_lc_matches);
   CHECK_NOTNULL(inlier_constraint);
 
-  statistics::StatsCollector connected_comp_stats(
-      "lcWithPrior -- Number of connected components");
-  statistics::StatsCollector max_inlier_ratio_ok_stats(
-      "lcWithPrior -- Max inlier ratio among components with RANSAC OK");
-  statistics::StatsCollector num_ransac_ok_higher_one_stats(
-      "lcWithPrior -- Num RANSAC OK higher than one");
-  statistics::StatsCollector num_frames_in_selected_component_stats(
-      "lcWithPrior -- Num frames in selected component");
-
   typedef int ComponentId;
   constexpr ComponentId kInvalidComponentId = -1;
   typedef std::unordered_map<vi_map::VisualFrameIdentifier, ComponentId>
@@ -774,8 +766,6 @@ bool LoopDetectorNode::lcWithPrior(
         if (landmark_frames.find(landmark_id) == landmark_frames.end()) {
           continue;
         }
-        const vi_map::VisualFrameIdentifierList& frames =
-            landmark_frames[landmark_id];
         landmark_frames[landmark_id].emplace_back(frame_id);
       }
       CHECK(frames_to_components.emplace(frame_id, kInvalidComponentId).second);
@@ -783,9 +773,9 @@ bool LoopDetectorNode::lcWithPrior(
   }
 
   // Label the connected components
+  timing::Timer timer_find_components(
+          "lcWithPrior -- Find connected components");
   ComponentId count_component_index = 0;
-  size_t max_component_size = 0u;
-  ComponentId max_component_id = kInvalidComponentId;
   Components components;
   for (const FramesToComponents::value_type& frame_to_component :
        frames_to_components) {
@@ -824,28 +814,29 @@ bool LoopDetectorNode::lcWithPrior(
             }
           }
         }
-
-        if (components[component_id].size() > max_component_size) {
-          max_component_size = components[component_id].size();
-          max_component_id = component_id;
-        }
       }
       exploration_queue.pop();
     }
   }
-  connected_comp_stats.AddSample(components.size());
+  timer_find_components.Stop();
+  statistics::StatsCollector num_comp_stats(
+      "lcWithPrior -- Number of components");
+  num_comp_stats.AddSample(components.size());
 
-  // Do PnP+RANSAC for every component
-  double max_inlier_ratio = 0.0;
-  size_t num_ransac_ok = 0u;
-  size_t selected_inlier_count = 0u;
-  ComponentId selected_component_id = kInvalidComponentId;
-  pose::Transformation& selected_T_G_I = *T_G_I;
-  unsigned int& selected_num_of_lc_matches = *num_of_lc_matches;
-  vi_map::LoopClosureConstraint& selected_inlier_constraint =
-      *inlier_constraint;
-  timing::Timer timer_pnp_all_components(
-      "lcWithPrior -- Compute Pnp+RANSAC for all components");
+  // Sort components by decreasing size
+  std::vector<ComponentId> component_ids;
+  component_ids.reserve(components.size());
+  for (const Components::value_type& component_to_frames : components) {
+      component_ids.push_back(component_to_frames.first);
+  }
+  std::sort(component_ids.begin(), component_ids.end(),
+            [&](const ComponentId& a, const ComponentId& b) -> bool
+            { return components[a].size() < components[b].size(); });
+
+  // Do PnP+RANSAC for every component until a pose if found
+  unsigned int& num_matches = *num_of_lc_matches;
+  bool ransac_ok = false;
+  timing::Timer timer_pnp_all_components("lcWithPrior -- Compute Pnp+RANSAC");
   for (const Components::value_type& component_to_frames : components) {
     // Rebuild the index with the component frames
     loop_detector_->Clear();
@@ -860,8 +851,8 @@ bool LoopDetectorNode::lcWithPrior(
     loop_detector_->Find(
         query_projected_image_ptr_list, kParallelFindIfPossible,
         &frame_to_matches);
-    const size_t num_matches = loop_closure::getNumberOfMatches(
-        frame_to_matches);
+
+    num_matches = loop_closure::getNumberOfMatches(frame_to_matches);
     if (num_matches == 0u) {
       continue;
     }
@@ -888,43 +879,22 @@ bool LoopDetectorNode::lcWithPrior(
     double inlier_ratio = 0.0;
     constexpr bool kMergeLandmarks = false;
     constexpr bool kAddLcEdges = false;
-    pose::Transformation component_T_G_I;
-    vi_map::LoopClosureConstraint component_inlier_constraint;
     pose_graph::VertexId vertex_id_closest_to_structure_matches;
     loop_closure_handler::LoopClosureHandler::MergedLandmark3dPositionVector
         landmark_pairs_merged;
     std::mutex map_mutex;
-    bool ransac_ok = handleLoopClosures(
+    ransac_ok = handleLoopClosures(
         constraint, kMergeLandmarks, kAddLcEdges, &inlier_count, &inlier_ratio,
-        map, &component_T_G_I, &component_inlier_constraint,
-        &landmark_pairs_merged, &vertex_id_closest_to_structure_matches,
-        &map_mutex);
+        map, T_G_I, inlier_constraint, &landmark_pairs_merged,
+        &vertex_id_closest_to_structure_matches, &map_mutex);
 
     if (ransac_ok) {
-      ++num_ransac_ok;
-      if (inlier_ratio > max_inlier_ratio) {
-        max_inlier_ratio = inlier_ratio;
-        selected_inlier_count = inlier_count;
-        selected_component_id = component_to_frames.first;
-        selected_T_G_I = component_T_G_I;
-        selected_num_of_lc_matches = num_matches;
-        selected_inlier_constraint = component_inlier_constraint;
-      }
+      break;
     }
   }
   timer_pnp_all_components.Stop();
 
-  if (num_ransac_ok == 0u) {
-    return false;
-  }
-
-  max_inlier_ratio_ok_stats.AddSample(max_inlier_ratio);
-  num_frames_in_selected_component_stats.AddSample(
-      components[selected_component_id].size());
-  if (num_ransac_ok > 1) {
-    num_ransac_ok_higher_one_stats.AddSample(num_ransac_ok);
-  }
-  return true;
+  return ransac_ok;
 }
 
 bool LoopDetectorNode::findVertexInDatabase(
