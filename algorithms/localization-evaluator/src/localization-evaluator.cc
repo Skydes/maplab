@@ -2,6 +2,7 @@
 
 #include <Eigen/Core>
 #include <aslam/common/statistics/statistics.h>
+#include <aslam/common/timer.h>
 #include <loop-closure-handler/loop-closure-handler.h>
 #include <maplab-common/parallel-process.h>
 
@@ -38,6 +39,7 @@ bool LocalizationEvaluator::evaluateSingleKeyframe(
       << "Couldn't find map vertex with ID: " << query_vertex_id.hexString();
   const vi_map::Vertex& query_vertex = map_->getVertex(query_vertex_id);
 
+  timing::Timer timer_localize("eloc - query a vertex for localization");
   const bool kMergeLandmarks = false;
   const bool kAddLoopclosureEdges = false;
   vi_map::LoopClosureConstraint inlier_constraints;
@@ -45,6 +47,8 @@ bool LocalizationEvaluator::evaluateSingleKeyframe(
   *ransac_ok = loop_detector_node_.findVertexInDatabase(
       query_vertex, kMergeLandmarks, kAddLoopclosureEdges, map_, &pnp_T_G_I,
       lc_matches_count, &inlier_constraints);
+  timer_localize.Stop();
+
   *inliers_count = inlier_constraints.structure_matches.size();
   *pnp_p_G_I = pnp_T_G_I.getPosition();
 

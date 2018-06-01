@@ -132,14 +132,14 @@ class LoopDetectorNode final
   // The parameter skip_invalid_landmark_ids should be set to true when
   // creating an entry for insertion, or false when creating an entry
   // for query.
-  bool convertFrameToProjectedImage(
+  void convertFrameToProjectedImage(
       const vi_map::VIMap& map, const vi_map::VisualFrameIdentifier& frame_id,
       const aslam::VisualFrame& frame,
       const vi_map::LandmarkIdList& observed_landmark_ids,
       const vi_map::MissionId& mission_id, const bool skip_invalid_landmark_ids,
       loop_closure::ProjectedImage* projected_image) const;
 
-  bool convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
+  void convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
       const vi_map::VIMap& map, const vi_map::VisualFrameIdentifier& frame_id,
       const aslam::VisualFrame& frame,
       const vi_map::LandmarkIdList& observed_landmark_ids,
@@ -200,6 +200,20 @@ class LoopDetectorNode final
           landmark_pairs_merged,
       std::mutex* map_mutex) const;
 
+  bool lcWithPrior(
+      const loop_closure::ProjectedImagePtrList& query_projected_image_ptr_list,
+      const aslam::VisualNFrame& query_n_frame,
+      const vi_map::VisualFrameIdentifierList& prior_frames_list,
+      const std::vector<vi_map::LandmarkIdList>& query_vertex_landmark_ids,
+      vi_map::VIMap* map, pose::Transformation* T_G_I,
+      unsigned int* num_of_lc_matches,
+      vi_map::VertexKeyPointToStructureMatchList* inlier_structure_matches)
+      const;
+
+  bool addBetterDescriptorsToProjectedImage(
+      const cv::Mat& raw_image,
+      const loop_closure::ProjectedImage::Ptr& projected_image) const;
+
   loop_closure_visualization::LoopClosureVisualizer::UniquePtr visualizer_;
   std::shared_ptr<loop_detector::LoopDetector> loop_detector_;
   vi_map::MissionIdSet missions_in_database_;
@@ -208,20 +222,13 @@ class LoopDetectorNode final
   static const std::string serialization_filename_;
   const bool use_random_pnp_seed_;
 
-
-  bool lcWithPrior(
-      const loop_closure::ProjectedImagePtrList& query_projected_image_ptr_list,
-      const vi_map::VisualFrameIdentifierList& prior_frames_list,
-      vi_map::VIMap* map, pose::Transformation* T_G_I,
-      unsigned int* num_of_lc_matches,
-      vi_map::LoopClosureConstraint* inlier_constraint) const;
-
   bool use_deep_retrieval_;
   std::unique_ptr<PlaceRetrieval> deep_retrieval_;
   typedef std::unordered_map<vi_map::VisualFrameIdentifier,
                              std::shared_ptr<loop_closure::ProjectedImage>>
       VisualFrameToProjectedImageMap;
   VisualFrameToProjectedImageMap visual_frame_to_projected_image_map_;
+  bool use_better_descriptors_;
   cv::Ptr<cv::xfeatures2d::SIFT> better_descriptor_extractor_;
 
   // A mapping from the merged landmark id (does not exist anymore) to the

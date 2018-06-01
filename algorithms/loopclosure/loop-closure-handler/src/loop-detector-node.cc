@@ -51,14 +51,15 @@ DEFINE_bool(lc_use_better_descriptors, false, "");
 namespace loop_detector_node {
 LoopDetectorNode::LoopDetectorNode()
     : use_random_pnp_seed_(FLAGS_lc_use_random_pnp_seed),
-      use_deep_retrieval_(FLAGS_lc_use_deep_retrieval) {
+      use_deep_retrieval_(FLAGS_lc_use_deep_retrieval),
+      use_better_descriptors_(FLAGS_lc_use_better_descriptors) {
   matching_based_loopclosure::MatchingBasedEngineSettings
       matching_engine_settings;
   loop_detector_ =
       std::make_shared<matching_based_loopclosure::MatchingBasedLoopDetector>(
           matching_engine_settings);
 
-  if (FLAGS_lc_use_better_descriptors) {
+  if (use_better_descriptors_) {
     better_descriptor_extractor_ = cv::xfeatures2d::SIFT::create();
     CHECK_EQ(
         static_cast<int>(matching_engine_settings.detector_engine_type),
@@ -128,7 +129,7 @@ bool LoopDetectorNode::convertFrameMatchesToConstraint(
   return true;
 }
 
-bool LoopDetectorNode::convertFrameToProjectedImage(
+void LoopDetectorNode::convertFrameToProjectedImage(
     const vi_map::VIMap& map, const vi_map::VisualFrameIdentifier& frame_id,
     const aslam::VisualFrame& frame,
     const vi_map::LandmarkIdList& observed_landmark_ids,
@@ -138,12 +139,12 @@ bool LoopDetectorNode::convertFrameToProjectedImage(
   // We want to add all landmarks.
   vi_map::LandmarkIdSet landmarks_to_add(
       observed_landmark_ids.begin(), observed_landmark_ids.end());
-  return convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
+  convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
       map, frame_id, frame, observed_landmark_ids, mission_id,
       skip_invalid_landmark_ids, landmarks_to_add, projected_image);
 }
 
-bool LoopDetectorNode::convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
+void LoopDetectorNode::convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
     const vi_map::VIMap& map, const vi_map::VisualFrameIdentifier& frame_id,
     const aslam::VisualFrame& frame,
     const vi_map::LandmarkIdList& observed_landmark_ids,
@@ -171,54 +172,6 @@ bool LoopDetectorNode::convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
       original_descriptors.rows(), original_descriptors.cols());
   Eigen::Matrix2Xd valid_measurements(2, original_measurements.cols());
   vi_map::LandmarkIdList valid_landmark_ids(original_measurements.cols());
-
-  const size_t better_descriptor_size =
-      better_descriptor_extractor_->descriptorSize();
-  Eigen::MatrixXf better_descriptors;
-  Eigen::MatrixXf valid_better_descriptors(
-      better_descriptor_size, original_descriptors.cols());
-
-  if (FLAGS_lc_use_better_descriptors) {
-    cv::Mat image;
-    vi_map::Vertex vertex = map.getVertex(frame_id.vertex_id);
-    if (!map.hasRawImage(vertex, frame_id.frame_index)) {
-      return false;
-    }
-    CHECK(map.getRawImage(vertex, frame_id.frame_index, &image));
-    CHECK_NOTNULL(image.data);
-
-    timing::Timer timer_compute_sift("lc -- Compute SIFT");
-    size_t num_detections = original_measurements.cols();
-    CHECK(frame.hasKeypointScales());
-    Eigen::VectorXd scales = frame.getKeypointScales();
-    CHECK_EQ(scales.size(), num_detections);
-    std::vector<cv::KeyPoint> keypoints;
-    for (size_t i = 0; i < num_detections; i++) {
-      keypoints.emplace_back(
-          original_measurements(0, i),
-          original_measurements(1, i),
-          5.6);
-          //scales(i));
-    }
-    std::vector<cv::KeyPoint> original_keypoints(keypoints);
-
-    // OpenCV doc mentions that SIFT can discard some keypoints or compute
-    // duplicated descriptors. For now we simply check that it's not the case.
-    // TODO: mark the landmarks associated with rejected keypoints as invalid
-    // TODO: remove duplicates
-    cv::Mat cv_descriptors;
-    better_descriptor_extractor_->compute(image, keypoints, cv_descriptors);
-    CHECK_EQ(keypoints.size(), num_detections);
-    for (size_t i = 0; i < original_keypoints.size(); i++) {
-      CHECK_EQ(original_keypoints[i].pt, keypoints[i].pt);
-    }
-    cv::cv2eigen(cv_descriptors, better_descriptors);
-    better_descriptors.transposeInPlace();
-    better_descriptors /= 512.f;  // scale back to [0, 1]
-    CHECK_EQ(better_descriptors.cols(), original_descriptors.cols());
-    CHECK_EQ(better_descriptors.rows(), better_descriptor_size);
-    timer_compute_sift.Stop();
-  }
 
   int num_valid_landmarks = 0;
   for (int i = 0; i < original_measurements.cols(); ++i) {
@@ -249,24 +202,14 @@ bool LoopDetectorNode::convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
         is_landmark_valid) {
       valid_measurements.col(num_valid_landmarks) =
           original_measurements.col(i);
-      if (FLAGS_lc_use_better_descriptors) {
-        valid_better_descriptors.col(num_valid_landmarks) =
-            better_descriptors.col(i);
-      } else {
-        valid_descriptors.col(num_valid_landmarks) = original_descriptors.col(i);
-      }
+      valid_descriptors.col(num_valid_landmarks) = original_descriptors.col(i);
       valid_landmark_ids[num_valid_landmarks] = observed_landmark_ids[i];
       ++num_valid_landmarks;
     }
   }
 
   valid_measurements.conservativeResize(Eigen::NoChange, num_valid_landmarks);
-  if (FLAGS_lc_use_better_descriptors) {
-    valid_better_descriptors.conservativeResize(
-        Eigen::NoChange, num_valid_landmarks);
-  } else {
-    valid_descriptors.conservativeResize(Eigen::NoChange, num_valid_landmarks);
-  }
+  valid_descriptors.conservativeResize(Eigen::NoChange, num_valid_landmarks);
   valid_landmark_ids.resize(num_valid_landmarks);
 
   if (skip_invalid_landmark_ids) {
@@ -279,13 +222,8 @@ bool LoopDetectorNode::convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
 
   projected_image->landmarks.swap(valid_landmark_ids);
   projected_image->measurements.swap(valid_measurements);
-  if (FLAGS_lc_use_better_descriptors) {
-    projected_image->projected_descriptors = valid_better_descriptors;
-  } else {
-    loop_detector_->ProjectDescriptors(
-        valid_descriptors, &projected_image->projected_descriptors);
-  }
-  return true;
+  loop_detector_->ProjectDescriptors(
+      valid_descriptors, &projected_image->projected_descriptors);
 }
 
 void LoopDetectorNode::convertLocalizationFrameToProjectedImage(
@@ -532,18 +470,26 @@ void LoopDetectorNode::addLandmarkSetToDatabase(
     std::shared_ptr<loop_closure::ProjectedImage> projected_image =
         std::make_shared<loop_closure::ProjectedImage>();
     constexpr bool kSkipInvalidLandmarkIds = true;
-    bool success = convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
+    convertFrameToProjectedImageOnlyUsingProvidedLandmarkIds(
         map, frame_identifier,
         vertex.getVisualFrame(frame_identifier.frame_index), landmark_ids,
         vertex.getMissionId(), kSkipInvalidLandmarkIds,
         frameid_and_landmarks.second, projected_image.get());
-    if (!success) {
-      statistics::StatsCollector noresource_counter("No resource for indexing");
-      noresource_counter.IncrementOne();
-      LOG(WARNING) << "Vertex " << vertex.id()
-        << " has no resource, can't index, skip";
-      continue;
-    }
+
+      if (use_better_descriptors_) {
+        cv::Mat raw_image;
+        if (!map.hasRawImage(vertex, frame_identifier.frame_index)) {
+          statistics::StatsCollector noresource_counter(
+              "No resource for indexing");
+          noresource_counter.IncrementOne();
+          LOG(WARNING) << "Vertex " << vertex.id()
+            << " has no resource, can't index, skipping.";
+          continue;
+        }
+        CHECK(map.getRawImage(
+            vertex, frame_identifier.frame_index, &raw_image));
+        addBetterDescriptorsToProjectedImage(raw_image, projected_image);
+      }
 
     if (use_deep_retrieval_) {
       visual_frame_to_projected_image_map_.emplace(
@@ -610,23 +556,102 @@ bool LoopDetectorNode::findNFrameInDatabase(
   CHECK_NOTNULL(inlier_structure_matches)->clear();
   // Note: vertex_id_closest_to_structure_matches is optional and may be NULL.
 
-  loop_closure::FrameToMatches frame_matches_list;
-
-  std::vector<vi_map::LandmarkIdList> query_vertex_observed_landmark_ids;
-
-  findNearestNeighborMatchesForNFrame(
-      n_frame, skip_untracked_keypoints, &query_vertex_observed_landmark_ids,
-      num_of_lc_matches, &frame_matches_list);
-
-  timing::Timer timer_compute_relative("lc compute absolute transform");
   constexpr bool kMergeLandmarks = false;
   constexpr bool kAddLoopclosureEdges = false;
-  loop_closure_handler::LoopClosureHandler handler(map,
-                                                   &landmark_id_old_to_new_);
-  return computeAbsoluteTransformFromFrameMatches(
-      n_frame, query_vertex_observed_landmark_ids, frame_matches_list,
-      kMergeLandmarks, kAddLoopclosureEdges, handler, T_G_I,
-      inlier_structure_matches, vertex_id_closest_to_structure_matches);
+  std::vector<vi_map::LandmarkIdList> query_vertex_observed_landmark_ids;
+  bool success;
+
+  if (use_deep_retrieval_) {
+    CHECK(!skip_untracked_keypoints);  // not implemented
+
+    const size_t num_frames = n_frame.getNumFrames();
+    loop_closure::ProjectedImagePtrList projected_image_ptr_list;
+    projected_image_ptr_list.reserve(num_frames);
+    query_vertex_observed_landmark_ids.resize(num_frames);
+    KeyframeToKeypointReindexMap keyframe_to_keypoint_reindexing;  // unused
+    keyframe_to_keypoint_reindexing.reserve(num_frames);
+
+    std::unordered_set<vi_map::VisualFrameIdentifier> all_retrieved_frames_set;
+
+    const pose_graph::VertexId query_vertex_id(
+        common::createRandomId<pose_graph::VertexId>());
+    for (size_t frame_idx = 0u; frame_idx < num_frames; ++frame_idx) {
+      if (!n_frame.isFrameSet(frame_idx) || !n_frame.isFrameValid(frame_idx)) {
+        continue;
+      }
+      const aslam::VisualFrame::ConstPtr frame =
+          n_frame.getFrameShared(frame_idx);
+      CHECK(frame->hasKeypointMeasurements());
+      CHECK(frame->hasRawImage());
+      if (frame->getNumKeypointMeasurements() == 0u) {
+        continue;
+      }
+      const cv::Mat& raw_image = frame->getRawImage();
+
+      // Compute the projected image
+      loop_closure::KeyframeId frame_id(query_vertex_id, frame_idx);
+      projected_image_ptr_list.push_back(
+          std::make_shared<loop_closure::ProjectedImage>());
+      convertLocalizationFrameToProjectedImage(
+          n_frame, frame_id, skip_untracked_keypoints,
+          projected_image_ptr_list.back(), &keyframe_to_keypoint_reindexing,
+          &(query_vertex_observed_landmark_ids)[frame_idx]);
+
+      // Retrieve some prior frames
+      vi_map::VisualFrameIdentifierList retrieved_frames;
+      deep_retrieval_->RetrieveNearestNeighbors(
+          raw_image, FLAGS_lc_deep_retrieval_num_nn,
+          FLAGS_lc_deep_retrieval_max_nn_distance, &retrieved_frames);
+      all_retrieved_frames_set.insert(
+          retrieved_frames.begin(), retrieved_frames.end());
+
+      // Optionally replace the projected descriptors by better descriptors
+      if (use_better_descriptors_) {
+        addBetterDescriptorsToProjectedImage(
+            raw_image, projected_image_ptr_list.back());
+      }
+    }
+
+    CHECK(all_retrieved_frames_set.size());
+    vi_map::VisualFrameIdentifierList all_retrieved_frames_list(
+        all_retrieved_frames_set.begin(), all_retrieved_frames_set.end());
+    success = lcWithPrior(
+        projected_image_ptr_list, n_frame, all_retrieved_frames_list,
+        query_vertex_observed_landmark_ids, map, T_G_I, num_of_lc_matches,
+        inlier_structure_matches);
+    LOG(INFO) << success;
+  } else {
+    loop_closure::FrameToMatches frame_matches_list;
+    findNearestNeighborMatchesForNFrame(
+        n_frame, skip_untracked_keypoints, &query_vertex_observed_landmark_ids,
+        num_of_lc_matches, &frame_matches_list);
+
+    timing::Timer timer_compute_relative("lc compute absolute transform");
+    loop_closure_handler::LoopClosureHandler handler(
+            map, &landmark_id_old_to_new_);
+    success = computeAbsoluteTransformFromFrameMatches(
+        n_frame, query_vertex_observed_landmark_ids, frame_matches_list,
+        kMergeLandmarks, kAddLoopclosureEdges, handler, T_G_I,
+        inlier_structure_matches, vertex_id_closest_to_structure_matches);
+    timer_compute_relative.Stop();
+  }
+
+  if (visualizer_ && success) {
+    LOG(INFO) << "Successful localization.";
+    vi_map::MissionIdList all_mission_ids;
+    map->getAllMissionIds(&all_mission_ids);
+    // TODO: add option to publish pointcloud as well
+    visualizer_->visualizeFullMapDatabase(all_mission_ids, *map);
+    //visualizer_->visualizeKeyframeToStructureMatch(
+        //*inlier_structure_matches, T_G_I->getPosition(),
+        //localization_summary_map);
+  } else {
+    LOG(WARNING) << "Localization failed: " << *num_of_lc_matches
+                 << " matches, " << inlier_structure_matches->size()
+                 << " inliers.";
+  }
+
+  return success;
 }
 
 void LoopDetectorNode::findNearestNeighborMatchesForNFrame(
@@ -703,14 +728,17 @@ void LoopDetectorNode::findNearestNeighborMatchesForNFrame(
 
 bool LoopDetectorNode::lcWithPrior(
     const loop_closure::ProjectedImagePtrList& query_projected_image_ptr_list,
+    const aslam::VisualNFrame& query_n_frame,
     const vi_map::VisualFrameIdentifierList& prior_frames_list,
+    const std::vector<vi_map::LandmarkIdList>& query_vertex_landmark_ids,
     vi_map::VIMap* map, pose::Transformation* T_G_I,
     unsigned int* num_of_lc_matches,
-    vi_map::LoopClosureConstraint* inlier_constraint) const {
+    vi_map::VertexKeyPointToStructureMatchList* inlier_structure_matches)
+    const {
   CHECK_NOTNULL(map);
   CHECK_NOTNULL(T_G_I);
   CHECK_NOTNULL(num_of_lc_matches);
-  CHECK_NOTNULL(inlier_constraint);
+  CHECK_NOTNULL(inlier_structure_matches);
 
   typedef int ComponentId;
   constexpr ComponentId kInvalidComponentId = -1;
@@ -883,10 +911,14 @@ bool LoopDetectorNode::lcWithPrior(
     loop_closure_handler::LoopClosureHandler::MergedLandmark3dPositionVector
         landmark_pairs_merged;
     std::mutex map_mutex;
-    ransac_ok = handleLoopClosures(
-        constraint, kMergeLandmarks, kAddLcEdges, &inlier_count, &inlier_ratio,
-        map, T_G_I, inlier_constraint, &landmark_pairs_merged,
-        &vertex_id_closest_to_structure_matches, &map_mutex);
+    loop_closure_handler::LoopClosureHandler handler(
+        map, &landmark_id_old_to_new_);
+    ransac_ok = handler.handleLoopClosure(
+        query_n_frame, query_vertex_landmark_ids, constraint.query_vertex_id,
+        constraint.structure_matches, kMergeLandmarks, kAddLcEdges,
+        &inlier_count, &inlier_ratio, T_G_I, inlier_structure_matches,
+        &landmark_pairs_merged, &vertex_id_closest_to_structure_matches,
+        &map_mutex, use_random_pnp_seed_);
 
     if (ransac_ok) {
       break;
@@ -895,6 +927,46 @@ bool LoopDetectorNode::lcWithPrior(
   timer_pnp_all_components.Stop();
 
   return ransac_ok;
+}
+
+bool LoopDetectorNode::addBetterDescriptorsToProjectedImage(
+    const cv::Mat& raw_image,
+    const loop_closure::ProjectedImage::Ptr& projected_image) const {
+  CHECK_NOTNULL(raw_image.data);
+  CHECK(projected_image != nullptr);
+
+  const size_t new_descriptor_size =
+      better_descriptor_extractor_->descriptorSize();
+  const size_t num_detections = projected_image->measurements.cols();
+  const Eigen::MatrixXd& measurements = projected_image->measurements;
+  Eigen::MatrixXf& descriptors = projected_image->projected_descriptors;
+  descriptors.resize(new_descriptor_size, Eigen::NoChange);
+  timing::Timer timer_compute_sift("lc -- Compute SIFT");
+
+  constexpr float kKeypointScale = 5.6;  // heuristic: average over test data.
+  std::vector<cv::KeyPoint> keypoints;
+  for (size_t i = 0; i < num_detections; i++) {
+    keypoints.emplace_back(
+        measurements(0, i), measurements(1, i), kKeypointScale);
+  }
+  std::vector<cv::KeyPoint> original_keypoints(keypoints);
+
+  // OpenCV doc mentions that SIFT can discard some keypoints or compute
+  // duplicated descriptors. For now we simply check that it's not the case.
+  // TODO: - remove the landmarks associated with rejected keypoints;
+  //       - remove duplicates.
+  cv::Mat cv_descriptors;
+  better_descriptor_extractor_->compute(raw_image, keypoints, cv_descriptors);
+  CHECK_EQ(keypoints.size(), num_detections);
+  for (size_t i = 0; i < original_keypoints.size(); i++) {
+    CHECK_EQ(original_keypoints[i].pt, keypoints[i].pt);
+  }
+
+  cv::cv2eigen(cv_descriptors, descriptors);
+  descriptors.transposeInPlace();
+  descriptors /= 512.f;  // scale back to [0, 1]
+  CHECK_EQ(descriptors.rows(), new_descriptor_size);
+  CHECK_EQ(descriptors.cols(), num_detections);
 }
 
 bool LoopDetectorNode::findVertexInDatabase(
@@ -915,7 +987,7 @@ bool LoopDetectorNode::findVertexInDatabase(
   loop_closure::ProjectedImagePtrList projected_image_ptr_list;
   projected_image_ptr_list.reserve(num_frames);
 
-  vi_map::VisualFrameIdentifierList all_retrieved_frames_list;
+  std::unordered_set<vi_map::VisualFrameIdentifier> all_retrieved_frames_set;
 
   for (size_t frame_idx = 0u; frame_idx < num_frames; ++frame_idx) {
     if (query_vertex.isVisualFrameSet(frame_idx) &&
@@ -929,33 +1001,38 @@ bool LoopDetectorNode::findVertexInDatabase(
       projected_image_ptr_list.push_back(
           std::make_shared<loop_closure::ProjectedImage>());
       constexpr bool kSkipInvalidLandmarkIds = false;
-      bool success = convertFrameToProjectedImage(
+      convertFrameToProjectedImage(
           *map, query_frame_id, query_vertex.getVisualFrame(frame_idx),
           observed_landmark_ids, query_vertex.getMissionId(),
           kSkipInvalidLandmarkIds, projected_image_ptr_list.back().get());
-      if (!success) {
-        continue;
-      }
 
-      if (use_deep_retrieval_) {
+      cv::Mat raw_image;
+      if (use_deep_retrieval_ || use_better_descriptors_) {
         if (!map->hasRawImage(query_vertex, frame_idx)) {
           continue;
         }
-        cv::Mat image;
-        CHECK(map->getRawImage(query_vertex, frame_idx, &image));
+        CHECK(map->getRawImage(query_vertex, frame_idx, &raw_image));
+      }
 
+      // Retrieve some prior frames
+      if (use_deep_retrieval_) {
         vi_map::VisualFrameIdentifierList retrieved_frames;
         deep_retrieval_->RetrieveNearestNeighbors(
-            image, FLAGS_lc_deep_retrieval_num_nn,
+            raw_image, FLAGS_lc_deep_retrieval_num_nn,
             FLAGS_lc_deep_retrieval_max_nn_distance, &retrieved_frames);
-        all_retrieved_frames_list.insert(
-            all_retrieved_frames_list.end(),
+        all_retrieved_frames_set.insert(
             retrieved_frames.begin(), retrieved_frames.end());
+      }
+
+      // Optionally replace the projected descriptors by better descriptors
+      if (use_better_descriptors_) {
+        addBetterDescriptorsToProjectedImage(
+            raw_image, projected_image_ptr_list.back());
       }
     }
   }
 
-  if (use_deep_retrieval_ && !all_retrieved_frames_list.size()) {
+  if (use_deep_retrieval_ && !all_retrieved_frames_set.size()) {
     statistics::StatsCollector noresource_counter("No resource for retrieval");
     noresource_counter.IncrementOne();
     LOG(WARNING) << "Vertex " << query_vertex.id() << " has no resource, skip";
@@ -963,9 +1040,16 @@ bool LoopDetectorNode::findVertexInDatabase(
   }
 
   if (use_deep_retrieval_) {
+    vi_map::VisualFrameIdentifierList all_retrieved_frames_list(
+        all_retrieved_frames_set.begin(), all_retrieved_frames_set.end());
+    std::vector<vi_map::LandmarkIdList> query_vertex_observed_landmark_ids;
+    query_vertex.getAllObservedLandmarkIds(&query_vertex_observed_landmark_ids);
+    inlier_constraint->query_vertex_id = query_vertex.id();
+
     return lcWithPrior(
-        projected_image_ptr_list, all_retrieved_frames_list, map, T_G_I,
-        num_of_lc_matches, inlier_constraint);
+        projected_image_ptr_list, query_vertex.getVisualNFrame(),
+        all_retrieved_frames_list, query_vertex_observed_landmark_ids, map,
+        T_G_I, num_of_lc_matches, &inlier_constraint->structure_matches);
   }
 
   loop_closure::FrameToMatches frame_matches_list;

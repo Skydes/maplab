@@ -24,7 +24,7 @@
 #include "matching-based-loopclosure/scoring.h"
 
 #include <gflags/gflags.h>
-DEFINE_bool(use_lowe_ratio_test, false, "");
+DEFINE_bool(lc_use_lowe_ratio_test, false, "");
 
 namespace matching_based_loopclosure {
 
@@ -106,7 +106,7 @@ void MatchingBasedLoopDetector::Find(
       KeyframeToMatchesMap keyframe_to_matches_map;
       for (int keypoint_idx = 0; keypoint_idx < indices.cols();
            ++keypoint_idx) {
-        if (FLAGS_use_lowe_ratio_test) {
+        if (FLAGS_lc_use_lowe_ratio_test) {
           CHECK(indices.rows() >= 2);
           const int first_nn_match_descriptor_idx =
             indices(0, keypoint_idx);
