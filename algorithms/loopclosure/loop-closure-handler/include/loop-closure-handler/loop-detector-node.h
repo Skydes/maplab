@@ -210,7 +210,7 @@ class LoopDetectorNode final
       vi_map::VertexKeyPointToStructureMatchList* inlier_structure_matches)
       const;
 
-  bool addBetterDescriptorsToProjectedImage(
+  void addBetterDescriptorsToProjectedImage(
       const cv::Mat& raw_image,
       const loop_closure::ProjectedImage::Ptr& projected_image) const;
 

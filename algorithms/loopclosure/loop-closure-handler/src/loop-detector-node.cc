@@ -929,7 +929,7 @@ bool LoopDetectorNode::lcWithPrior(
   return ransac_ok;
 }
 
-bool LoopDetectorNode::addBetterDescriptorsToProjectedImage(
+void LoopDetectorNode::addBetterDescriptorsToProjectedImage(
     const cv::Mat& raw_image,
     const loop_closure::ProjectedImage::Ptr& projected_image) const {
   CHECK_NOTNULL(raw_image.data);
