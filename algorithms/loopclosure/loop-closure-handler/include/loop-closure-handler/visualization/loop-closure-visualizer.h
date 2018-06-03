@@ -5,6 +5,8 @@
 
 #include <vi-map/vi-map.h>
 #include <visualization/viwls-graph-plotter.h>
+#include <aslam/common/memory.h>
+#include <descriptor-projection/descriptor-projection.h>
 
 #include "loop-closure-handler/loop-closure-constraint.h"
 #include "loop-closure-handler/loop-closure-handler.h"
@@ -40,11 +42,25 @@ class LoopClosureVisualizer {
       const Eigen::Vector3d& query_position,
       const summary_map::LocalizationSummaryMap& localization_summary_map);
 
+  void visualizeKeyframeToStructureMatch(
+      const vi_map::VertexKeyPointToStructureMatchList& structure_matches,
+      const Eigen::Vector3d& query_position,
+      const vi_map::VIMap* localization_map);
+
   void visualizeFullMapDatabase(
       const vi_map::MissionIdList& missions, const vi_map::VIMap& map);
 
   void visualizeSummaryMapDatabase(
       const summary_map::LocalizationSummaryMap& localization_summary_map);
+
+  void visualizeDescriptorMatches(
+      const vi_map::VertexKeyPointToStructureMatchList& structure_matches,
+      const loop_closure::ProjectedImage::Ptr& projected_query_image,
+      const aslam::VisualFrame::ConstPtr& query_frame,
+      const vi_map::VIMap* map,
+      const std::unordered_map<vi_map::VisualFrameIdentifier,
+                               std::shared_ptr<loop_closure::ProjectedImage>>&
+          index_frame_projected_image_map);
 
  private:
   void addKeyframeToStructureMatchMarker(

@@ -5,6 +5,7 @@
 #include <vi-map/vi-map.h>
 #include <loop-closure-handler/loop-detector-node.h>
 #include <vio-common/vio-types.h>
+#include <aslam/common/timer.h>
 
 #include "rovioli-deep-reloc/localizer-helpers.h"
 
@@ -41,6 +42,7 @@ bool Localizer::localizeNFrame(
     vio::LocalizationResult* localization_result) const {
   CHECK(nframe);
   CHECK_NOTNULL(localization_result);
+  timing::Timer timer_localize("ROVIOLI localizer");
 
   bool result = false;
   switch (current_localization_mode_) {

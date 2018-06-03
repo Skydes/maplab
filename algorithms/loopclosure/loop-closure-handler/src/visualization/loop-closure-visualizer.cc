@@ -3,6 +3,7 @@
 #include <visualization/color-palette.h>
 #include <visualization/common-rviz-visualization.h>
 #include <visualization/viz-primitives.h>
+#include <opencv2/opencv.hpp>
 
 DEFINE_bool(
     lc_visualize_outliers, false,
@@ -172,6 +173,48 @@ void LoopClosureVisualizer::visualizeFullMapDatabase(
   vi_map_plotter_.publishEdges(map, missions);
 }
 
+void LoopClosureVisualizer::visualizeKeyframeToStructureMatch(
+    const vi_map::VertexKeyPointToStructureMatchList& structure_matches,
+    const Eigen::Vector3d& query_position,
+    const vi_map::VIMap* localization_map) {
+  visualization::LineSegmentVector loop_closures;
+
+  visualization::LineSegment line_segment;
+  line_segment.from = query_position;
+  line_segment.scale = 0.05;
+  line_segment.color.red = 170;
+  line_segment.color.green = 170;
+  line_segment.color.blue = 220;
+  line_segment.alpha = 0.4;
+
+  Eigen::Matrix3Xd inlier_landmarks;
+  inlier_landmarks.resize(Eigen::NoChange, structure_matches.size());
+
+  int idx = 0;
+  for (const vi_map::VertexKeyPointToStructureMatch& match :
+       structure_matches) {
+    const Eigen::Vector3d landmark_p_G =
+        localization_map->getLandmark_G_p_fi(match.landmark_result);
+    line_segment.to = landmark_p_G;
+    loop_closures.push_back(line_segment);
+
+    CHECK_LT(idx, inlier_landmarks.cols());
+    inlier_landmarks.col(idx) = landmark_p_G;
+
+    ++idx;
+  }
+
+  constexpr double kInlierAlpha = 0.8;
+  visualization::publish3DPointsAsPointCloud(
+      inlier_landmarks, visualization::kCommonYellow, kInlierAlpha,
+      visualization::kDefaultMapFrame, "loopclosure_inliers");
+
+  constexpr size_t kMarkerId = 0u;
+  visualization::publishLines(
+      loop_closures, kMarkerId, visualization::kDefaultMapFrame,
+      visualization::kDefaultNamespace, loop_closures_topic_);
+}
+
 void LoopClosureVisualizer::visualizeSummaryMapDatabase(
     const summary_map::LocalizationSummaryMap& localization_summary_map) {
   constexpr double kAlpha = 0.7;
@@ -179,6 +222,69 @@ void LoopClosureVisualizer::visualizeSummaryMapDatabase(
       localization_summary_map.GLandmarkPosition().cast<double>(),
       visualization::kCommonDarkGray, kAlpha, visualization::kDefaultMapFrame,
       "loopclosure_database");
+}
+
+void LoopClosureVisualizer::visualizeDescriptorMatches(
+    const vi_map::VertexKeyPointToStructureMatchList& structure_matches,
+    const loop_closure::ProjectedImage::Ptr& projected_query_image,
+    const aslam::VisualFrame::ConstPtr& query_frame,
+    const vi_map::VIMap* map,
+    const std::unordered_map<vi_map::VisualFrameIdentifier,
+                             std::shared_ptr<loop_closure::ProjectedImage>>&
+        index_frame_projected_image_map) {
+  std::unordered_map<vi_map::VisualFrameIdentifier,
+                     vi_map::VertexKeyPointToStructureMatchList>
+      frame_id_to_matches;
+  for (const vi_map::VertexKeyPointToStructureMatch& match :
+       structure_matches) {
+    frame_id_to_matches[match.frame_identifier_result].push_back(match);
+  }
+  vi_map::VisualFrameIdentifier max_matches_frame_id;
+  size_t num_max_matches = 0;
+  for (const auto& frame_id_matches_pair : frame_id_to_matches) {
+    if (frame_id_matches_pair.second.size() > num_max_matches) {
+      num_max_matches = frame_id_matches_pair.second.size();
+      max_matches_frame_id = frame_id_matches_pair.first;
+    }
+  }
+  const vi_map::VertexKeyPointToStructureMatchList& selected_matches =
+      frame_id_to_matches[max_matches_frame_id];
+  std::vector<cv::KeyPoint> cv_keypoints_1, cv_keypoints_2;
+  std::vector<cv::DMatch> cv_matches;
+  size_t cnt = 0;
+  for (const vi_map::VertexKeyPointToStructureMatch& match :
+       selected_matches) {
+    const Eigen::Vector2d& kp1 = projected_query_image->measurements.col(
+        match.keypoint_index_query);
+    cv_keypoints_1.emplace_back(kp1(0), kp1(1), 1);
+    const loop_closure::ProjectedImage& proj_image_result =
+        *index_frame_projected_image_map.at(match.frame_identifier_result);
+    bool found = false;
+    for (size_t i = 0; i < proj_image_result.landmarks.size(); i++) {
+      if (proj_image_result.landmarks[i] == match.landmark_result) {
+        CHECK_LT(i, proj_image_result.measurements.cols());
+        const Eigen::Vector2d& kp2 = proj_image_result.measurements.col(i);
+        cv_keypoints_2.emplace_back(kp2(0), kp2(1), 1);
+        found = true;
+        break;
+      }
+    }
+    CHECK(found);
+    cv_matches.emplace_back(cnt, cnt, 1);
+    ++cnt;
+  }
+
+  const cv::Mat& raw_image_1 = query_frame->getRawImage();
+  cv::Mat raw_image_2;
+  const vi_map::Vertex& max_matches_vertex = map->getVertex(
+      max_matches_frame_id.vertex_id);
+  map->getRawImage(
+        max_matches_vertex, max_matches_frame_id.frame_index, &raw_image_2);
+  cv::Mat patch_image;
+  cv::drawMatches(raw_image_1, cv_keypoints_1, raw_image_2, cv_keypoints_2,
+                  cv_matches, patch_image);
+  const std::string topic = "lc/match_query_retrieved";
+  visualization::RVizVisualizationSink::publish(topic, patch_image);
 }
 
 }  // namespace loop_closure_visualization

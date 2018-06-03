@@ -42,12 +42,13 @@ inline ros::Time createRosTimestamp(int64_t timestamp_nanoseconds) {
 }
 }  // namespace
 
-DataPublisherFlow::DataPublisherFlow()
+DataPublisherFlow::DataPublisherFlow(const vi_map::VIMap* localization_map)
     : map_publisher_timeout_(
           common::TimeoutCounter(
               FLAGS_dr_map_publish_interval_s * kSecondsToNanoSeconds)) {
   visualization::RVizVisualizationSink::init();
   plotter_.reset(new visualization::ViwlsGraphRvizPlotter);
+  visualizeMap(*localization_map);
 }
 
 void DataPublisherFlow::registerPublishers() {

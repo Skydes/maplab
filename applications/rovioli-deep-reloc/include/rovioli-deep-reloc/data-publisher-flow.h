@@ -11,6 +11,7 @@
 #include <visualization/common-rviz-visualization.h>
 #include <visualization/rviz-visualization-sink.h>
 #include <visualization/viwls-graph-plotter.h>
+#include <vi-map/vi-map.h>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
@@ -35,7 +36,7 @@ class DataPublisherFlow {
   const std::string kTopicBiasGyro = kGeneralTopicPrefix + "bias_gyro";
   const std::string kCameraExtrinsicTopic = kGeneralTopicPrefix + "cam_T_C_B";
 
-  DataPublisherFlow();
+  DataPublisherFlow(const vi_map::VIMap* localization_map);
 
   void attachToMessageFlow(message_flow::MessageFlow* flow);
   void visualizeMap(const vi_map::VIMap& vi_map) const;

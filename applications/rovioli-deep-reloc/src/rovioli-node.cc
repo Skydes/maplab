@@ -49,7 +49,7 @@ RovioliNode::RovioliNode(
       new rovioli::FeatureTrackingFlow(camera_system, *maplab_imu_sensor));
   tracker_flow_->attachToMessageFlow(flow);
 
-  data_publisher_flow_.reset(new DataPublisherFlow);
+  data_publisher_flow_.reset(new DataPublisherFlow(localization_map));
   data_publisher_flow_->attachToMessageFlow(flow);
 
   // Subscribe to end of days signal from the datasource.

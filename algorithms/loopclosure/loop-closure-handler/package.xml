@@ -34,4 +34,5 @@
   <depend>visualization</depend>
   <depend>vocabulary_tree</depend>
   <depend>deep_relocalization</depend>
+  <depend>opencv3_catkin</depend>
 </package>

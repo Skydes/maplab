@@ -535,10 +535,13 @@ bool LoopDetectorNode::findNFrameInSummaryMapDatabase(
       inlier_structure_matches, kVertexIdClosestToStructureMatches);
 
   if (visualizer_ && success) {
+    LOG(INFO) << "Successful localization.";
     visualizer_->visualizeSummaryMapDatabase(localization_summary_map);
     visualizer_->visualizeKeyframeToStructureMatch(
         *inlier_structure_matches, T_G_I->getPosition(),
         localization_summary_map);
+  } else {
+    LOG(INFO) << "Localization failed.";
   }
 
   return success;
@@ -619,7 +622,15 @@ bool LoopDetectorNode::findNFrameInDatabase(
         projected_image_ptr_list, n_frame, all_retrieved_frames_list,
         query_vertex_observed_landmark_ids, map, T_G_I, num_of_lc_matches,
         inlier_structure_matches);
-    LOG(INFO) << success;
+
+    if (visualizer_ && success) {
+      CHECK_EQ(projected_image_ptr_list.size(), 1);
+      timing::Timer timer_viz_matches("lc visualize descriptor matches");
+      visualizer_->visualizeDescriptorMatches(
+          *inlier_structure_matches, projected_image_ptr_list[0],
+          n_frame.getFrameShared(0), map, visual_frame_to_projected_image_map_);
+      timer_viz_matches.Stop();
+    }
   } else {
     loop_closure::FrameToMatches frame_matches_list;
     findNearestNeighborMatchesForNFrame(
@@ -638,13 +649,8 @@ bool LoopDetectorNode::findNFrameInDatabase(
 
   if (visualizer_ && success) {
     LOG(INFO) << "Successful localization.";
-    vi_map::MissionIdList all_mission_ids;
-    map->getAllMissionIds(&all_mission_ids);
-    // TODO: add option to publish pointcloud as well
-    visualizer_->visualizeFullMapDatabase(all_mission_ids, *map);
-    //visualizer_->visualizeKeyframeToStructureMatch(
-        //*inlier_structure_matches, T_G_I->getPosition(),
-        //localization_summary_map);
+    visualizer_->visualizeKeyframeToStructureMatch(
+        *inlier_structure_matches, T_G_I->getPosition(), map);
   } else {
     LOG(WARNING) << "Localization failed: " << *num_of_lc_matches
                  << " matches, " << inlier_structure_matches->size()
