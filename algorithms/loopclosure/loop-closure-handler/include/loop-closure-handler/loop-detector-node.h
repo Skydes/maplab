@@ -230,6 +230,7 @@ class LoopDetectorNode final
   VisualFrameToProjectedImageMap visual_frame_to_projected_image_map_;
   bool use_better_descriptors_;
   cv::Ptr<cv::xfeatures2d::SIFT> better_descriptor_extractor_;
+  mutable std::mutex loop_detector_mutex_;
 
   // A mapping from the merged landmark id (does not exist anymore) to the
   // landmark id it was merged into (and should exist).

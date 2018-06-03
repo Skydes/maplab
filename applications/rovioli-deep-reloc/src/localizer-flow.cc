@@ -44,6 +44,13 @@ void LocalizerFlow::attachToMessageFlow(message_flow::MessageFlow* flow) {
 void LocalizerFlow::processTrackedNFrameAndImu(
     const vio::SynchronizedNFrameImu::ConstPtr& nframe_imu) {
   CHECK(nframe_imu);
+
+  std::unique_lock<std::mutex> localizer_lock(m_localizer_access_,
+                                              std::defer_lock);
+  if (!localizer_lock.try_lock()) {
+    return;
+  }
+
   // Throttle the localization rate.
   const int64_t current_timestamp =
       nframe_imu->nframe->getMinTimestampNanoseconds();

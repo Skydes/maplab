@@ -866,20 +866,24 @@ bool LoopDetectorNode::lcWithPrior(
   bool ransac_ok = false;
   timing::Timer timer_pnp_all_components("lcWithPrior -- Compute Pnp+RANSAC");
   for (const Components::value_type& component_to_frames : components) {
-    // Rebuild the index with the component frames
-    loop_detector_->Clear();
-    for (const vi_map::VisualFrameIdentifier& frame_id :
-         component_to_frames.second) {
-      loop_detector_->Insert(visual_frame_to_projected_image_map_.at(frame_id));
-    }
-
-    // Find descriptor matches
     loop_closure::FrameToMatches frame_to_matches;
-    constexpr bool kParallelFindIfPossible = true;
-    loop_detector_->Find(
-        query_projected_image_ptr_list, kParallelFindIfPossible,
-        &frame_to_matches);
+    // Lock the loop detector
+    {
+      std::unique_lock<std::mutex> lock_detector(loop_detector_mutex_);
+      // Rebuild the index with the component frames
+      loop_detector_->Clear();
+      for (const vi_map::VisualFrameIdentifier& frame_id :
+           component_to_frames.second) {
+        loop_detector_->Insert(
+            visual_frame_to_projected_image_map_.at(frame_id));
+      }
 
+      // Find descriptor matches
+      constexpr bool kParallelFindIfPossible = true;
+      loop_detector_->Find(
+          query_projected_image_ptr_list, kParallelFindIfPossible,
+          &frame_to_matches);
+    }
     num_matches = loop_closure::getNumberOfMatches(frame_to_matches);
     if (num_matches == 0u) {
       continue;

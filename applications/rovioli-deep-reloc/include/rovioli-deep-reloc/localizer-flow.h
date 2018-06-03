@@ -29,6 +29,7 @@ class LocalizerFlow {
   const int64_t min_localization_timestamp_diff_ns_;
   int64_t previous_nframe_timestamp_ns_;
   mutable std::mutex m_previous_nframe_timestamp_ns_;
+  mutable std::mutex m_localizer_access_;
 };
 }  // namespace rovioli_deep_reloc
 #endif  // ROVIOLI_DEEP_RELOC_LOCALIZER_FLOW_H_
