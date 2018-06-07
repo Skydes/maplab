@@ -652,9 +652,7 @@ bool LoopDetectorNode::findNFrameInDatabase(
     visualizer_->visualizeKeyframeToStructureMatch(
         *inlier_structure_matches, T_G_I->getPosition(), map);
   } else {
-    LOG(WARNING) << "Localization failed: " << *num_of_lc_matches
-                 << " matches, " << inlier_structure_matches->size()
-                 << " inliers.";
+    LOG(WARNING) << "Localization failed: " << *num_of_lc_matches<< " matches";
   }
 
   return success;

@@ -383,10 +383,6 @@ bool LoopClosureHandler::handleLoopClosure(
   statistics::StatsCollector stats_inlier_count("LC RANSAC inliers");
   stats_inlier_count.AddSample(*num_inliers);
 
-  Eigen::Matrix3Xd landmark_positions;
-  landmark_positions.resize(Eigen::NoChange, *num_inliers);
-  inlier_structure_matches->resize(static_cast<size_t>(*num_inliers));
-
   if (*num_inliers < FLAGS_lc_min_inlier_count) {
     statistics::StatsCollector stats("LC too few RANSAC inliers");
     stats.IncrementOne();
@@ -415,6 +411,10 @@ bool LoopClosureHandler::handleLoopClosure(
     statistics_ransac_fail_num_inliers.AddSample(*num_inliers);
     return false;
   }
+
+  Eigen::Matrix3Xd landmark_positions;
+  landmark_positions.resize(Eigen::NoChange, *num_inliers);
+  inlier_structure_matches->resize(static_cast<size_t>(*num_inliers));
 
   int inlier_sequential_idx = 0;
   for (const KeypointToInlierIndexWithReprojectionErrorMap::value_type&
