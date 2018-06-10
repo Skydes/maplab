@@ -158,18 +158,33 @@ bool addAllMissionsWithKnownBaseFrameToProvidedLoopDetector(
   vi_map::MissionIdList all_mission_ids;
   map.getAllMissionIds(&all_mission_ids);
 
+  //for (const vi_map::MissionId& map_mission_id : all_mission_ids) {
+    //const vi_map::VIMission& map_mission = map.getMission(map_mission_id);
+    //if (map.getMissionBaseFrame(map_mission.getBaseFrameId())
+            //.is_T_G_M_known()) {
+      //base_mission_ids.emplace_back(map_mission_id);
+
+      //// Only add the missions which we don't already have in the database.
+      //if (!loop_detector->hasMissionInDatabase(map_mission_id)) {
+        //loop_detector->addMissionToDatabase(map_mission_id, map);
+      //}
+    //}
+  //}
+
+  vi_map::LandmarkIdSet selected_landmarks;
   for (const vi_map::MissionId& map_mission_id : all_mission_ids) {
     const vi_map::VIMission& map_mission = map.getMission(map_mission_id);
     if (map.getMissionBaseFrame(map_mission.getBaseFrameId())
             .is_T_G_M_known()) {
       base_mission_ids.emplace_back(map_mission_id);
 
-      // Only add the missions which we don't already have in the database.
-      if (!loop_detector->hasMissionInDatabase(map_mission_id)) {
-        loop_detector->addMissionToDatabase(map_mission_id, map);
-      }
+      vi_map::LandmarkIdList mission_landmarks;
+      map.getAllLandmarkIdsInMission(map_mission_id, &mission_landmarks);
+      selected_landmarks.insert(
+          mission_landmarks.begin(), mission_landmarks.end());
     }
   }
+  loop_detector->addLandmarkSetToDatabase(selected_landmarks, map);
 
   if (base_mission_ids.empty()) {
     LOG(ERROR) << "At least one mission should have a known T_G_M baseframe "

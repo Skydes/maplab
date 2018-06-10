@@ -200,15 +200,19 @@ class LoopDetectorNode final
           landmark_pairs_merged,
       std::mutex* map_mutex) const;
 
-  bool lcWithPrior(
-      const loop_closure::ProjectedImagePtrList& query_projected_image_ptr_list,
-      const aslam::VisualNFrame& query_n_frame,
-      const vi_map::VisualFrameIdentifierList& prior_frames_list,
-      const std::vector<vi_map::LandmarkIdList>& query_vertex_landmark_ids,
-      vi_map::VIMap* map, pose::Transformation* T_G_I,
-      unsigned int* num_of_lc_matches,
-      vi_map::VertexKeyPointToStructureMatchList* inlier_structure_matches)
-      const;
+bool lcWithPrior(
+    const loop_closure::ProjectedImagePtrList& query_projected_image_ptr_list,
+    const aslam::VisualNFrame& query_n_frame,
+    const vi_map::VisualFrameIdentifierList& prior_frames_list,
+    const std::vector<vi_map::LandmarkIdList>& query_vertex_landmark_ids,
+    const bool merge_landmarks,
+    const bool add_lc_edges,
+    vi_map::VIMap* map, pose::Transformation* T_G_I,
+    unsigned int* num_of_lc_matches, double* inlier_ratio,
+    vi_map::VertexKeyPointToStructureMatchList* inlier_structure_matches,
+    vi_map::VertexKeyPointToStructureMatchList* raw_structure_matches,
+    loop_closure_handler::LoopClosureHandler::MergedLandmark3dPositionVector*
+        landmark_pairs_merged) const;
 
   void addBetterDescriptorsToProjectedImage(
       const cv::Mat& raw_image,

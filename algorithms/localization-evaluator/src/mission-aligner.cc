@@ -21,17 +21,26 @@ void alignAndCooptimizeMissionsWithoutLandmarkMerge(
   loop_detector_node::LoopDetectorNode loop_detector;
 
   // Add map mission to the DB.
+  vi_map::LandmarkIdSet selected_landmarks;
   for (const vi_map::MissionId& mission_id : map_missions_ids) {
-    pose_graph::VertexId current_vertex_id =
-        map->getMission(mission_id).getRootVertexId();
-
-    VLOG(1) << "Adding map mission to the Loop Closure DB: " << mission_id;
-    do {
-      loop_detector.addVertexToDatabase(current_vertex_id, *map);
-    } while (map->getNextVertex(
-        current_vertex_id, map->getGraphTraversalEdgeType(mission_id),
-        &current_vertex_id));
+    vi_map::LandmarkIdList mission_landmarks;
+    map->getAllLandmarkIdsInMission(mission_id, &mission_landmarks);
+    selected_landmarks.insert(
+        mission_landmarks.begin(), mission_landmarks.end());
   }
+  loop_detector.addLandmarkSetToDatabase(selected_landmarks, *map);
+
+  //for (const vi_map::MissionId& mission_id : map_missions_ids) {
+    //pose_graph::VertexId current_vertex_id =
+        //map->getMission(mission_id).getRootVertexId();
+
+    //VLOG(1) << "Adding map mission to the Loop Closure DB: " << mission_id;
+    //do {
+      //loop_detector.addVertexToDatabase(current_vertex_id, *map);
+    //} while (map->getNextVertex(
+        //current_vertex_id, map->getGraphTraversalEdgeType(mission_id),
+        //&current_vertex_id));
+  //}
 
   // To revert the landmark merge.
   vi_map::VertexKeyPointToStructureMatchList landmark_merge_revert_vector;
@@ -109,7 +118,7 @@ void alignAndCooptimizeMissionsWithoutLandmarkMerge(
 
   VLOG(1) << "Optimizing missions.";
   map_optimization_legacy::BaOptimizationOptions options;
-  options.fix_ncamera_intrinsics = true;
+  //options.fix_ncamera_intrinsics = true;
   options.fix_landmark_positions = false;
   options.fix_accel_bias = false;
   options.fix_gyro_bias = false;
@@ -119,7 +128,7 @@ void alignAndCooptimizeMissionsWithoutLandmarkMerge(
   options.add_pose_prior_for_fixed_vertices = false;
   options.fix_landmark_positions_of_fixed_vertices =
       optimize_only_query_mission;
-  options.num_iterations = 5;
+  //options.num_iterations = 5;
 
   // We don't want to fix any baseframes.
   vi_map::MissionBaseFrameIdSet fixed_baseframes;
