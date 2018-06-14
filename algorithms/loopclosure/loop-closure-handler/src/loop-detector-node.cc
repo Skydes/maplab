@@ -28,11 +28,13 @@
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/eigen.hpp>
+#include <maplab-common/eigen-proto.h>
 #include <deep-relocalization/place-retrieval.h>
 #include <deep-relocalization/descriptor_index.pb.h>
 
 #include "loop-closure-handler/loop-closure-handler.h"
 #include "loop-closure-handler/visualization/loop-closure-visualizer.h"
+#include "loop-closure-handler/debug_fusion.pb.h"  // DEBUG
 
 DEFINE_bool(
     lc_filter_underconstrained_landmarks, true,
@@ -47,7 +49,10 @@ DEFINE_uint64(lc_deep_retrieval_num_nn, 20, "");
 DEFINE_double(lc_deep_retrieval_max_nn_distance, 2, "");
 DEFINE_uint64(lc_deep_retrieval_expand_components, 0, "");
 DEFINE_bool(lc_use_better_descriptors, false, "");
+DEFINE_bool(lc_assume_perfect_retrieval, false, "");
 DEFINE_bool(lc_detect_sift_scale, false, "");
+
+#define ADD_DEBUG_STATS 1
 
 namespace loop_detector_node {
 LoopDetectorNode::LoopDetectorNode()
@@ -500,9 +505,11 @@ void LoopDetectorNode::addLandmarkSetToDatabase(
         addBetterDescriptorsToProjectedImage(raw_image, projected_image);
       }
 
+    visual_frame_to_projected_image_map_.emplace(
+        frame_identifier, projected_image);
     if (use_deep_retrieval_) {
-      visual_frame_to_projected_image_map_.emplace(
-          frame_identifier, projected_image);
+      //visual_frame_to_projected_image_map_.emplace(
+          //frame_identifier, projected_image);
     } else {
       loop_detector_->Insert(projected_image);
     }
@@ -748,6 +755,31 @@ void LoopDetectorNode::findNearestNeighborMatchesForNFrame(
   *num_of_lc_matches = loop_closure::getNumberOfMatches(*frame_matches_list);
 }
 
+bool isGtMatch(
+    const pose::Transformation& T_G_I,
+    const pose::Transformation& gt_T_G_I,
+    double dist_thresh = 3.) {
+  double position_error = (gt_T_G_I.getPosition() - T_G_I.getPosition()).norm();
+  double angle_error = std::acos(((
+          gt_T_G_I.getRotationMatrix().inverse() * T_G_I.getRotationMatrix()
+          ).trace() - 1.) / 2.);
+  return position_error < dist_thresh && angle_error < (70. * 3.142 / 180);
+}
+bool isGtMatch(
+    const vi_map::VIMap& map,
+    const loop_closure::ProjectedImage& projected_image,
+    const pose::Transformation& gt_T_G_I) {
+  pose::Transformation T_G_I = map.getVertex_T_G_I(
+      projected_image.keyframe_id.vertex_id);
+  return isGtMatch(T_G_I, gt_T_G_I);
+}
+
+void LoopDetectorNode::serialize_debug(std::string file_path) {
+  std::fstream output(file_path,
+                      std::ios::out | std::ios::trunc | std::ios::binary);
+  CHECK(debug_fusion_proto_.SerializeToOstream(&output));
+}
+
 bool LoopDetectorNode::lcWithPrior(
     const loop_closure::ProjectedImagePtrList& query_projected_image_ptr_list,
     const aslam::VisualNFrame& query_n_frame,
@@ -760,7 +792,8 @@ bool LoopDetectorNode::lcWithPrior(
     vi_map::VertexKeyPointToStructureMatchList* inlier_structure_matches,
     vi_map::VertexKeyPointToStructureMatchList* raw_structure_matches,
     loop_closure_handler::LoopClosureHandler::MergedLandmark3dPositionVector*
-        landmark_pairs_merged) const {
+        landmark_pairs_merged,
+    pose::Transformation* gt_T_G_I) const {
   CHECK_NOTNULL(map);
   CHECK_NOTNULL(T_G_I);
   CHECK_NOTNULL(num_of_lc_matches);
@@ -880,6 +913,43 @@ bool LoopDetectorNode::lcWithPrior(
       "lcWithPrior -- Number of components");
   num_comp_stats.AddSample(components.size());
 
+#ifdef ADD_DEBUG_STATS
+  // Build some stats on the clusters localizability
+  statistics::StatsCollector prior_list_has_any_gt_match_stats(
+      "lcWithPrior -- Prior list has any gt match");
+  statistics::StatsCollector num_comp_with_matches_stats_sup1(
+      "lcWithPrior -- Number of components with gt match >1");
+  statistics::StatsCollector size_comp_with_matches_stats(
+      "lcWithPrior -- Average size of components with gt match");
+  bool prior_list_has_any_gt_match = false;
+  std::unordered_set<size_t> sizes_components_with_matches;
+  ComponentId id_component_with_match = kInvalidComponentId;
+  for (const vi_map::VisualFrameIdentifier& frame_id : prior_frames_list) {
+    const loop_closure::ProjectedImage& proj_im =
+        *visual_frame_to_projected_image_map_.at(frame_id);
+    bool is_match = isGtMatch(*map, proj_im, *gt_T_G_I);
+    prior_list_has_any_gt_match |= is_match;
+    if (is_match) {
+      id_component_with_match = frames_to_components[frame_id];
+      sizes_components_with_matches.insert(
+          components[id_component_with_match].size());
+    }
+  }
+  prior_list_has_any_gt_match_stats.AddSample(prior_list_has_any_gt_match);
+  if(prior_list_has_any_gt_match) {
+    if (sizes_components_with_matches.size() > 1) {
+      num_comp_with_matches_stats_sup1.AddSample(
+          sizes_components_with_matches.size());
+    }
+    size_comp_with_matches_stats.AddSample(
+        std::accumulate(sizes_components_with_matches.begin(),
+                        sizes_components_with_matches.end(), 0.0)
+        / static_cast<double>(sizes_components_with_matches.size()));
+  }
+  ComponentId selected_component_id = kInvalidComponentId;
+  size_t num_processed_components = 0;
+#endif
+
   // Sort components by decreasing size
   std::vector<ComponentId> component_ids;
   component_ids.reserve(components.size());
@@ -895,6 +965,9 @@ bool LoopDetectorNode::lcWithPrior(
   bool ransac_ok = false;
   timing::Timer timer_pnp_all_components("lcWithPrior -- Compute Pnp+RANSAC");
   for (const ComponentId& component_id : component_ids) {
+#ifdef ADD_DEBUG_STATS
+    num_processed_components++;
+#endif
     const std::unordered_set<vi_map::VisualFrameIdentifier>& component_frames =
         components[component_id];
     loop_closure::FrameToMatches frame_to_matches;
@@ -916,6 +989,13 @@ bool LoopDetectorNode::lcWithPrior(
     }
     num_matches = loop_closure::getNumberOfMatches(frame_to_matches);
     if (num_matches == 0u) {
+#ifdef ADD_DEBUG_STATS
+      if (component_id == id_component_with_match) {
+        statistics::StatsCollector size_comp_when_no_match_found_stats(
+            "lcWithPrior -- Size gt comp when no match is found");
+        size_comp_when_no_match_found_stats.AddSample(component_frames.size());
+      }
+#endif
       continue;
     }
 
@@ -950,11 +1030,134 @@ bool LoopDetectorNode::lcWithPrior(
         landmark_pairs_merged, &vertex_id_closest_to_structure_matches,
         &map_mutex, use_random_pnp_seed_);
 
+#ifdef ADD_DEBUG_STATS
+    if(ransac_ok || component_id == id_component_with_match) {
+      proto::DebugFusion::QueryComponent* query_comp_proto =
+          debug_fusion_proto_.add_query_components();
+      if (ransac_ok) {
+        selected_component_id = component_id;
+        std::string status = isGtMatch(*T_G_I, *gt_T_G_I) ? "ok" : "wrong";
+        query_comp_proto->set_status(status);
+        statistics::StatsCollector size_comp_when_gt_comp_succeeds_stats(
+            "lcWithPrior -- Size comp when gt comp succeeds");
+        size_comp_when_gt_comp_succeeds_stats.AddSample(component_frames.size());
+        statistics::StatsCollector num_matches_when_gt_comp_succeeds_stats(
+            "lcWithPrior -- Num matches when gt comp succeeds");
+        num_matches_when_gt_comp_succeeds_stats.AddSample(num_matches);
+        statistics::StatsCollector num_inliers_when_gt_comp_succeeds_stats(
+            "lcWithPrior -- Num inliers when gt comp succeeds");
+        num_inliers_when_gt_comp_succeeds_stats.AddSample(inlier_count);
+        statistics::StatsCollector inlier_ratio_when_gt_comp_succeeds_stats(
+            "lcWithPrior -- Inlier ratio when gt comp succeeds");
+        inlier_ratio_when_gt_comp_succeeds_stats.AddSample(*inlier_ratio);
+      } else {
+        query_comp_proto->set_status("fail");
+        statistics::StatsCollector size_comp_when_gt_comp_fails_stats(
+            "lcWithPrior -- Size comp when gt comp fails");
+        size_comp_when_gt_comp_fails_stats.AddSample(component_frames.size());
+        statistics::StatsCollector num_matches_when_gt_comp_fails_stats(
+            "lcWithPrior -- Num matches when gt comp fails");
+        num_matches_when_gt_comp_fails_stats.AddSample(num_matches);
+        if(*inlier_ratio < 0.0) {
+          statistics::StatsCollector num_inliers_when_gt_comp_fails_num_stats(
+              "lcWithPrior -- Num inliers when gt comp fails bc of num");
+          num_inliers_when_gt_comp_fails_num_stats.AddSample(inlier_count);
+        } else if(*inlier_ratio > 0.0) {
+          statistics::StatsCollector num_inliers_when_gt_comp_fails_ratio_stats(
+              "lcWithPrior -- Num inliers when gt comp fails bc of ratio");
+          num_inliers_when_gt_comp_fails_ratio_stats.AddSample(inlier_count);
+          statistics::StatsCollector inlier_ratio_when_gt_comp_fails_ratio_stats(
+              "lcWithPrior -- Inlier ratio when gt comp fails bc of ratio");
+          inlier_ratio_when_gt_comp_fails_ratio_stats.AddSample(*inlier_ratio);
+        }
+      }
+      query_projected_image_ptr_list[0]->keyframe_id.vertex_id.serialize(
+          query_comp_proto->mutable_query_id());
+      query_comp_proto->set_num_matches(num_matches);
+      query_comp_proto->set_num_inliers(inlier_count);
+      query_comp_proto->set_inlier_ratio(*inlier_ratio);
+      for (const vi_map::VisualFrameIdentifier& frame_id : component_frames) {
+        frame_id.vertex_id.serialize(query_comp_proto->add_retrieved_ids());
+      }
+      for (const loop_closure::Match& match :
+           frame_to_matches[query_projected_image_ptr_list[0]->keyframe_id]) {
+        proto::DebugFusion::QueryComponent::Match* match_proto =
+          query_comp_proto->add_matches();
+        CHECK_LT(match.keypoint_id_query.keypoint_index,
+                 query_projected_image_ptr_list[0]->measurements.cols());
+        common::eigen_proto::serialize(
+            Eigen::MatrixXd(query_projected_image_ptr_list[0]->measurements.col(
+                match.keypoint_id_query.keypoint_index)),
+            match_proto->mutable_query_measurement());
+        const loop_closure::ProjectedImage& proj_image_result =
+          *visual_frame_to_projected_image_map_.at(match.keyframe_id_result);
+
+        bool found = false;
+        for (size_t i = 0; i < proj_image_result.landmarks.size(); i++) {
+          if (proj_image_result.landmarks[i] == match.landmark_result) {
+            CHECK_LT(i, proj_image_result.measurements.cols());
+            common::eigen_proto::serialize(
+                Eigen::MatrixXd(proj_image_result.measurements.col(i)),
+                match_proto->mutable_db_measurement());
+            found = true;
+          }
+        }
+        CHECK(found);
+        match.keyframe_id_result.vertex_id.serialize(
+            match_proto->mutable_db_vertex_id());
+      }
+      common::eigen_proto::serialize(
+          Eigen::MatrixXd(gt_T_G_I->getPosition()),
+          query_comp_proto->mutable_gt_position());
+      if (ransac_ok) {
+        common::eigen_proto::serialize(
+            Eigen::MatrixXd(T_G_I->getPosition()),
+            query_comp_proto->mutable_pnp_position());
+        query_comp_proto->set_num_evaluated_clusters(num_processed_components);
+        query_comp_proto->set_total_num_clusters(components.size());
+      }
+    }
+#endif
+
     if (ransac_ok) {
       break;
     }
   }
   timer_pnp_all_components.Stop();
+
+#ifdef ADD_DEBUG_STATS
+  // Stats again
+  statistics::StatsCollector select_the_right_component_stats(
+      "lcWithPrior -- Select the right component");
+  statistics::StatsCollector size_comp_selected_right_stats(
+      "lcWithPrior -- Size comp when selected right one");
+  statistics::StatsCollector size_comp_selected_wrong_stats(
+      "lcWithPrior -- Size comp when selected wrong one");
+  statistics::StatsCollector num_fail_find_any_component_despite_match(
+      "lcWithPrior -- Fail find any component despite gt match");
+  statistics::StatsCollector size_comp_selected_stats(
+      "lcWithPrior -- Size of the  selected component");
+  statistics::StatsCollector num_processed_comp_stats(
+      "lcWithPrior -- Number of components processed before success");
+  bool found_one_component = selected_component_id != kInvalidComponentId;
+  if (found_one_component) {
+    num_processed_comp_stats.AddSample(num_processed_components);
+  }
+  if (prior_list_has_any_gt_match) {
+    bool selected_right_comp = selected_component_id == id_component_with_match;
+    select_the_right_component_stats.AddSample(selected_right_comp);
+    num_fail_find_any_component_despite_match.AddSample(!found_one_component);
+    if (found_one_component) {
+      size_t size_comp = components[id_component_with_match].size();
+      size_comp_selected_stats.AddSample(size_comp);
+      if (selected_right_comp) {
+        size_comp_selected_right_stats.AddSample(size_comp);
+      } else {
+        size_comp_selected_wrong_stats.AddSample(size_comp);
+      }
+    }
+  }
+#endif
 
   return ransac_ok;
 }
@@ -1047,7 +1250,8 @@ bool LoopDetectorNode::findVertexInDatabase(
     const vi_map::Vertex& query_vertex, const bool merge_landmarks,
     const bool add_lc_edges, vi_map::VIMap* map, pose::Transformation* T_G_I,
     unsigned int* num_of_lc_matches,
-    vi_map::LoopClosureConstraint* inlier_constraint) const {
+    vi_map::LoopClosureConstraint* inlier_constraint,
+    pose::Transformation* gt_T_G_I) const {
   CHECK_NOTNULL(map);
   CHECK_NOTNULL(T_G_I);
   CHECK_NOTNULL(num_of_lc_matches);
@@ -1106,6 +1310,40 @@ bool LoopDetectorNode::findVertexInDatabase(
     }
   }
 
+  if (FLAGS_lc_assume_perfect_retrieval) {
+    CHECK(use_deep_retrieval_);
+    CHECK_NOTNULL(gt_T_G_I);
+    all_retrieved_frames_set.clear();
+    std::vector<std::pair<vi_map::VisualFrameIdentifier, double>>
+      candidate_frames_error;
+    for (const VisualFrameToProjectedImageMap::value_type& frame_proj_im :
+         visual_frame_to_projected_image_map_) {
+      const pose::Transformation& candidate_T_G_I = map->getVertex_T_G_I(
+          frame_proj_im.first.vertex_id);
+      if (isGtMatch(candidate_T_G_I, *gt_T_G_I, 30.)) {
+        double pos_error = (candidate_T_G_I.getPosition()
+                            - gt_T_G_I->getPosition()).norm();
+        candidate_frames_error.push_back(
+            std::make_pair(frame_proj_im.first, pos_error));
+      }
+    }
+    std::sort(candidate_frames_error.begin(), candidate_frames_error.end(),
+              [&](const std::pair<vi_map::VisualFrameIdentifier, double>& a,
+                  const std::pair<vi_map::VisualFrameIdentifier, double>& b)
+              -> bool { return a.second < b.second; });
+    size_t cnt = 0;
+    for (const std::pair<vi_map::VisualFrameIdentifier, double>& p :
+         candidate_frames_error) {
+      all_retrieved_frames_set.insert(p.first);
+      if (++cnt >= FLAGS_lc_deep_retrieval_num_nn) {
+        break;
+      }
+    }
+    statistics::StatsCollector num_prior_frames(
+        "Perfect retrieval - num prior frames");
+    num_prior_frames.AddSample(all_retrieved_frames_set.size());
+  }
+
   if (use_deep_retrieval_ && !all_retrieved_frames_set.size()) {
     statistics::StatsCollector noresource_counter("No resource for retrieval");
     noresource_counter.IncrementOne();
@@ -1130,7 +1368,8 @@ bool LoopDetectorNode::findVertexInDatabase(
         all_retrieved_frames_list, query_vertex_observed_landmark_ids,
         merge_landmarks, add_lc_edges, map, T_G_I, num_of_lc_matches,
         &inlier_ratio, &inlier_constraint->structure_matches,
-        &raw_structure_matches, &landmark_pairs_merged);
+        &raw_structure_matches, &landmark_pairs_merged,
+        gt_T_G_I);
   }
 
   loop_closure::FrameToMatches frame_matches_list;
@@ -1145,6 +1384,79 @@ bool LoopDetectorNode::findVertexInDatabase(
       frame_matches_list, merge_landmarks, add_lc_edges, map, T_G_I,
       inlier_constraint, &vertex_id_closest_to_structure_matches);
   timer_compute_relative.Stop();
+
+#ifdef ADD_DEBUG_STATS
+  // Debug
+  proto::DebugFusion::QueryComponent* query_comp_proto =
+    debug_fusion_proto_.add_query_components();
+  if (ransac_ok) {
+    query_comp_proto->set_status("ok");
+  } else {
+    query_comp_proto->set_status("fail");
+  }
+  CHECK_EQ(projected_image_ptr_list.size(), 1);
+  projected_image_ptr_list[0]->keyframe_id.vertex_id.serialize(
+      query_comp_proto->mutable_query_id());
+  query_comp_proto->set_num_matches(*num_of_lc_matches);
+  query_comp_proto->set_num_inliers(
+      inlier_constraint->structure_matches.size());
+  query_comp_proto->set_inlier_ratio(-1.);
+
+  std::unordered_set<pose_graph::VertexId> matching_vertices;
+  for (const loop_closure::Match& match :
+       frame_matches_list[projected_image_ptr_list[0]->keyframe_id]) {
+    proto::DebugFusion::QueryComponent::Match* match_proto =
+      query_comp_proto->add_matches();
+    CHECK_LT(match.keypoint_id_query.keypoint_index,
+             projected_image_ptr_list[0]->measurements.cols());
+    common::eigen_proto::serialize(
+        Eigen::MatrixXd(projected_image_ptr_list[0]->measurements.col(
+            match.keypoint_id_query.keypoint_index)),
+        match_proto->mutable_query_measurement());
+
+    //const aslam::VisualFrame& frame = query_vertex.getVisualFrame(
+        //projected_image_ptr_list[0]->keyframe_id.frame_index);
+    //Eigen::Vector2d projected_kp;
+    //CHECK(frame.getRawCameraGeometry());
+    //frame.toRawImageCoordinates(
+        //Eigen::Vector2d(projected_image_ptr_list[0]->measurements.col(
+            //match.keypoint_id_query.keypoint_index)),
+        //&projected_kp);
+    //common::eigen_proto::serialize(Eigen::MatrixXd(projected_kp),
+                                   //match_proto->mutable_query_measurement());
+
+    const loop_closure::ProjectedImage& proj_image_result =
+      *visual_frame_to_projected_image_map_.at(match.keyframe_id_result);
+
+    bool found = false;
+    for (size_t i = 0; i < proj_image_result.landmarks.size(); i++) {
+      if (proj_image_result.landmarks[i] == match.landmark_result) {
+        CHECK_LT(i, proj_image_result.measurements.cols());
+        common::eigen_proto::serialize(
+            Eigen::MatrixXd(proj_image_result.measurements.col(i)),
+            match_proto->mutable_db_measurement());
+        found = true;
+      }
+    }
+    CHECK(found);
+    match.keyframe_id_result.vertex_id.serialize(
+        match_proto->mutable_db_vertex_id());
+    matching_vertices.insert(match.keyframe_id_result.vertex_id);
+  }
+  for (const pose_graph::VertexId& vid : matching_vertices) {
+    vid.serialize(query_comp_proto->add_retrieved_ids());
+  }
+
+  common::eigen_proto::serialize(
+      Eigen::MatrixXd(gt_T_G_I->getPosition()),
+      query_comp_proto->mutable_gt_position());
+  if (ransac_ok) {
+    common::eigen_proto::serialize(
+        Eigen::MatrixXd(T_G_I->getPosition()),
+        query_comp_proto->mutable_pnp_position());
+  }
+#endif
+
   return ransac_ok;
 }
 

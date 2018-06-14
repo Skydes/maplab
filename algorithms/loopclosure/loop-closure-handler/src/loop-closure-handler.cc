@@ -385,8 +385,8 @@ bool LoopClosureHandler::handleLoopClosure(
 
   if (*num_inliers < FLAGS_lc_min_inlier_count) {
     statistics::StatsCollector stats("LC too few RANSAC inliers");
-    stats.IncrementOne();
-
+    stats.AddSample(*num_inliers);
+    *inlier_ratio = -1.0;
     return false;
   }
 

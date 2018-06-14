@@ -4,7 +4,8 @@ project(loop_closure_handler)
 find_package(catkin_simple REQUIRED)
 catkin_simple(ALL_DEPS_REQUIRED)
 
-set(PROTO_DEFNS proto/loop-closure-handler/loop_detector_node.proto)
+set(PROTO_DEFNS proto/loop-closure-handler/loop_detector_node.proto
+                proto/loop-closure-handler/debug_fusion.proto)
 PROTOBUF_CATKIN_GENERATE_CPP2("proto" PROTO_SRCS PROTO_HDRS ${PROTO_DEFNS})
 
 #############

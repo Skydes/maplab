@@ -26,6 +26,7 @@
 #include "loop-closure-handler/loop-closure-handler.h"
 #include "loop-closure-handler/loop_detector_node.pb.h"
 #include "loop-closure-handler/visualization/loop-closure-visualizer.h"
+#include "loop-closure-handler/debug_fusion.pb.h" // DEBUG
 
 namespace loop_detector {
 class LoopDetector;
@@ -75,7 +76,8 @@ class LoopDetectorNode final
       const vi_map::Vertex& query_vertex, const bool merge_landmarks,
       const bool add_lc_edges, vi_map::VIMap* map, pose::Transformation* T_G_I,
       unsigned int* num_of_lc_matches,
-      vi_map::LoopClosureConstraint* inlier_constraint) const;
+      vi_map::LoopClosureConstraint* inlier_constraint,
+      pose::Transformation* gt_T_G_I = nullptr) const;
 
   bool findNFrameInDatabase(
       const aslam::VisualNFrame& n_frame, const bool skip_untracked_keypoints,
@@ -117,6 +119,8 @@ class LoopDetectorNode final
       const proto::LoopDetectorNode& proto_loop_detector_node) override;
 
   static const std::string& getDefaultSerializationFilename();
+
+  void serialize_debug(std::string file_path);
 
  private:
   typedef std::vector<size_t> SupsampledToFullIndexMap;
@@ -212,7 +216,8 @@ bool lcWithPrior(
     vi_map::VertexKeyPointToStructureMatchList* inlier_structure_matches,
     vi_map::VertexKeyPointToStructureMatchList* raw_structure_matches,
     loop_closure_handler::LoopClosureHandler::MergedLandmark3dPositionVector*
-        landmark_pairs_merged) const;
+        landmark_pairs_merged,
+    pose::Transformation* gt_T_G_I=nullptr) const;
 
   void addBetterDescriptorsToProjectedImage(
       const cv::Mat& raw_image,
@@ -235,6 +240,7 @@ bool lcWithPrior(
   bool use_better_descriptors_;
   cv::Ptr<cv::xfeatures2d::SIFT> better_descriptor_extractor_;
   mutable std::mutex loop_detector_mutex_;
+  mutable proto::DebugFusion debug_fusion_proto_;  // DEBUG
 
   // A mapping from the merged landmark id (does not exist anymore) to the
   // landmark id it was merged into (and should exist).

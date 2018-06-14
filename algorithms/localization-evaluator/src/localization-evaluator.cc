@@ -44,14 +44,14 @@ bool LocalizationEvaluator::evaluateSingleKeyframe(
   const bool kAddLoopclosureEdges = false;
   vi_map::LoopClosureConstraint inlier_constraints;
   pose::Transformation pnp_T_G_I;
+  pose::Transformation gt_T_G_I = map_->getVertex_T_G_I(query_vertex_id);
   *ransac_ok = loop_detector_node_.findVertexInDatabase(
       query_vertex, kMergeLandmarks, kAddLoopclosureEdges, map_, &pnp_T_G_I,
-      lc_matches_count, &inlier_constraints);
+      lc_matches_count, &inlier_constraints, &gt_T_G_I);
   timer_localize.Stop();
 
   *inliers_count = inlier_constraints.structure_matches.size();
   *pnp_p_G_I = pnp_T_G_I.getPosition();
-
   Eigen::Vector3d p_G_I = map_->getVertex_G_p_I(query_vertex_id);
   double position_error = (p_G_I - pnp_T_G_I.getPosition()).norm();
 
@@ -134,6 +134,8 @@ void LocalizationEvaluator::evaluateMission(
   std::iota(query_indices.begin(), query_indices.end(), 0u);
   // Avoid spawning a thread by directly calling the function.
   pose_query(query_indices);
+
+  loop_detector_node_.serialize_debug("loc_eval.pb");  // DEBUG
 
   // Copy back all valid results.
   statistics->num_vertices = 0u;

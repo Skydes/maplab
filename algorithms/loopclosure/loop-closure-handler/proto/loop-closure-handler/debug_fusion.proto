@@ -1,0 +1,30 @@
+syntax = "proto2";
+package loop_detector_node.proto;
+
+import "maplab-common/id.proto";
+import "maplab-common/eigen.proto";
+
+message DebugFusion {
+  message QueryComponent {
+    optional string status = 1;
+    optional common.proto.Id query_id = 2;
+    repeated common.proto.Id retrieved_ids = 3;
+    optional uint32 num_matches = 4;
+    optional uint32 num_inliers = 5;
+    optional double inlier_ratio = 6;
+
+    message Match {
+      optional common.proto.MatrixXd query_measurement = 1;
+      optional common.proto.MatrixXd db_measurement = 2;
+      optional common.proto.Id db_vertex_id = 3;
+      optional string db_resource_name = 4;
+    }
+    repeated Match matches = 7;
+
+    optional common.proto.MatrixXd gt_position = 8;
+    optional common.proto.MatrixXd pnp_position = 9;
+    optional uint32 num_evaluated_clusters = 10;
+    optional uint32 total_num_clusters = 11;
+  }
+  repeated QueryComponent query_components = 1;
+}
