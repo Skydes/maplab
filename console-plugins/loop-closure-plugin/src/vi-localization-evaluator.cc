@@ -70,6 +70,38 @@ void VILocalizationEvaluator::evaluateLocalizationPerformance(
             << " (" << mission_statistics.bad_localization_p_G_I.size() << "/"
             << mission_statistics.num_vertices << ")";
 
+    if (plotter_) {
+      plotter_->visualizeMap(*map_);
+      constexpr size_t kMarkerId = 0u;
+
+      visualization::SphereVector good_localization_spheres;
+      for (const Eigen::Vector3d& p_G_I :
+           mission_statistics.localization_p_G_I) {
+        visualization::Sphere sphere;
+        sphere.position = p_G_I;
+        sphere.radius = 1.0;
+        sphere.color = visualization::kCommonGreen;
+        sphere.alpha = 0.8;
+        good_localization_spheres.push_back(sphere);
+      }
+      visualization::publishSpheres(
+          good_localization_spheres, kMarkerId, visualization::kDefaultMapFrame,
+          "loc_eval", "successful_localizations");
+
+      visualization::SphereVector bad_localization_spheres;
+      for (const Eigen::Vector3d& p_G_I :
+           mission_statistics.bad_localization_p_G_I) {
+        visualization::Sphere sphere;
+        sphere.position = p_G_I;
+        sphere.radius = 1.0;
+        sphere.color = visualization::kCommonRed;
+        sphere.alpha = 0.8;
+        bad_localization_spheres.push_back(sphere);
+      }
+      visualization::publishSpheres(
+          bad_localization_spheres, kMarkerId, visualization::kDefaultMapFrame,
+          "loc_eval", "wrong_localizations");
+    }
   } else {
     LOG(WARNING) << "No vertices evaluated!";
   }
