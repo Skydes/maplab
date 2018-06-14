@@ -47,6 +47,7 @@ DEFINE_uint64(lc_deep_retrieval_num_nn, 20, "");
 DEFINE_double(lc_deep_retrieval_max_nn_distance, 2, "");
 DEFINE_uint64(lc_deep_retrieval_expand_components, 0, "");
 DEFINE_bool(lc_use_better_descriptors, false, "");
+DEFINE_bool(lc_detect_sift_scale, false, "");
 
 namespace loop_detector_node {
 LoopDetectorNode::LoopDetectorNode()
@@ -978,12 +979,56 @@ void LoopDetectorNode::addBetterDescriptorsToProjectedImage(
     keypoints.emplace_back(
         measurements(0, i), measurements(1, i), kKeypointScale);
   }
-  std::vector<cv::KeyPoint> original_keypoints(keypoints);
+
+  if (FLAGS_lc_detect_sift_scale) {
+    timing::Timer timer_compute_sift_scale("lc -- Compute SIFT scale");
+    cv::Ptr<cv::xfeatures2d::SIFT> scale_detector =
+      cv::xfeatures2d::SIFT::create(1500, 3, 0.02, 20);
+    std::vector<cv::KeyPoint> sift_keypoints;
+    scale_detector->detect(raw_image, sift_keypoints);
+    for (cv::KeyPoint& kpt : keypoints) {
+      double distance_to_nearest = -1;
+      size_t nearest_idx = 0, idx = 0;
+      for (const cv::KeyPoint& sift_kpt : sift_keypoints) {
+        double distance = cv::norm(sift_kpt.pt - kpt.pt);
+        if (distance < distance_to_nearest || distance_to_nearest == -1) {
+          distance_to_nearest = distance;
+          nearest_idx = idx;
+        }
+        ++idx;
+      }
+      if (distance_to_nearest != -1) {
+        const cv::KeyPoint& nearest_kpt = sift_keypoints[nearest_idx];
+        if (distance_to_nearest <= 5) {
+          kpt.size = nearest_kpt.size;
+          kpt.octave = nearest_kpt.octave;
+          //kpt.angle = nearest_kpt.angle;
+          //kpt.response = nearest_kpt.response;
+          statistics::StatsCollector stats_distance_to_nearest(
+              "SIFT descriptors - dist to nearest");
+          stats_distance_to_nearest.AddSample(distance_to_nearest);
+          statistics::StatsCollector stats_keypoint_scales(
+              "SIFT descriptors - selected keypoint scales");
+          stats_keypoint_scales.AddSample(nearest_kpt.size);
+        }
+        statistics::StatsCollector stats_keypoint_scales(
+            "SIFT descriptors - keypoint scales");
+        stats_keypoint_scales.AddSample(nearest_kpt.size);
+      }
+    }
+    statistics::StatsCollector stats_num_total_kpt(
+        "SIFT descriptors - num initial keypoints");
+    stats_num_total_kpt.AddSample(keypoints.size());
+    statistics::StatsCollector stats_num_detected_kpt(
+        "SIFT descriptors - num detected keypoints");
+    stats_num_detected_kpt.AddSample(sift_keypoints.size());
+  }
 
   // OpenCV doc mentions that SIFT can discard some keypoints or compute
   // duplicated descriptors. For now we simply check that it's not the case.
   // TODO: - remove the landmarks associated with rejected keypoints;
   //       - remove duplicates.
+  std::vector<cv::KeyPoint> original_keypoints(keypoints);
   cv::Mat cv_descriptors;
   better_descriptor_extractor_->compute(raw_image, keypoints, cv_descriptors);
   CHECK_EQ(keypoints.size(), num_detections);
